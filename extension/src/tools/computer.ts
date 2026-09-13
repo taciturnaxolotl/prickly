@@ -24,6 +24,7 @@ import {
   click,
   drag,
   forbiddenChord,
+  unknownKeyName,
   hover,
   pressKeyChord,
   scroll,
@@ -230,6 +231,8 @@ defineTool({
         for (const chord of args.key.split(/\s+/).filter(Boolean)) {
           const refused = forbiddenChord(chord);
           if (refused) throw new PricklyError(refused, "bad_params");
+          const unknown = unknownKeyName(chord);
+          if (unknown) throw new PricklyError(unknown, "bad_params");
           await pressKeyChord(tabId, chord, args.repeat);
           if (args.repeat > 1) notes.push(`${chord} x${args.repeat}`);
           else notes.push(chord);

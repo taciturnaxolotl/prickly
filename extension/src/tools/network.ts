@@ -242,8 +242,19 @@ defineTool({
     const tabId = await tabIdFor(ctx, args.tabId);
     const record = getRecord(tabId, args.requestId);
     if (!record) {
+      // Distinguish "never recording" from "recorded but evicted"; guessing
+      // eviction sent agents hunting for a buffer size they never set.
+      const state = captureState(tabId);
+      if (!state) {
+        throw new PricklyError(
+          `No capture is running on tab ${tabId}, so there are no requests to read. ` +
+            `Start one with network_capture_start, then drive the page.`,
+        );
+      }
       throw new PricklyError(
-        `No captured request ${args.requestId} on tab ${tabId}. It may have scrolled out of the buffer.`,
+        `No captured request ${args.requestId} on tab ${tabId}. ` +
+          `The capture holds ${state.requests.length} request(s); list them with network_requests. ` +
+          `If it was captured a while ago it may have been pushed out of the ring buffer.`,
       );
     }
 

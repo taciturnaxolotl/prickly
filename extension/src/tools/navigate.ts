@@ -38,6 +38,7 @@ defineTool({
 
     const tab = await resolveTab(session, args.tabId);
     const before = originOf(tab.url);
+    const urlBefore = tab.url ?? "";
 
     if (isHistory) {
       await evalInPage(tab.id!, args.url === "back" ? "history.back()" : "history.forward()");
@@ -58,14 +59,25 @@ defineTool({
     // rather than reporting a bare success at the wrong page.
     const requested = isHistory ? null : resolveUrl(args.url, tab.url);
     const landed = after.url ?? "";
-    const redirected =
-      requested !== null && stripHash(requested) !== stripHash(landed);
+    const moved = stripHash(landed) !== stripHash(urlBefore);
+    const wrongPlace = requested !== null && stripHash(requested) !== stripHash(landed);
+
+    // A tab that never moved did not "redirect": the browser refused the URL.
+    // Reporting that as a redirect sent agents off debugging the site instead
+    // of the URL they asked for, so the two cases are now told apart.
+    if (wrongPlace && !moved) {
+      return text(
+        `The browser refused to open ${requested}. The tab is still on ${landed}.`,
+        `Schemes like data:, blob:, and javascript: cannot be navigated to directly; ` +
+          `use javascript_eval to run code, or open a real http(s) URL.`,
+      );
+    }
 
     return text(
       settled
         ? `Navigated to ${landed}`
         : `Navigated to ${landed}, but the page was still loading after ${args.timeoutMs}ms. Re-read it before acting.`,
-      redirected ? `(note: the page redirected; you asked for ${requested})` : "",
+      wrongPlace ? `(note: the page redirected; you asked for ${requested})` : "",
       before !== originOf(after.url) ? `(origin changed: ${before} -> ${originOf(after.url)})` : "",
     );
   },

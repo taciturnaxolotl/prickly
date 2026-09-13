@@ -36,7 +36,12 @@ defineTool({
     ),
   },
   async execute(args, ctx) {
-    const steps = args.actions as { name: string; input?: Record<string, unknown> }[];
+    // Agents see these tools with an MCP prefix ("prickly_read_page"), so accept
+    // that spelling here instead of reporting a name as unbatchable and then
+    // listing it as batchable in the same breath.
+    const steps = (args.actions as { name: string; input?: Record<string, unknown> }[]).map(
+      (step) => ({ ...step, name: step.name.replace(/^prickly_/, "") }),
+    );
     if (!steps.length) throw new PricklyError("browser_batch needs at least one action.", "bad_params");
 
     const nested = steps.find((step) => step.name === "browser_batch");

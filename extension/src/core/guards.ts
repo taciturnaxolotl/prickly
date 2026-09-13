@@ -37,8 +37,23 @@ export function restrictedReason(url: string | undefined): string | null {
   }
   if (RESTRICTED_SCHEMES.includes(scheme)) {
     return (
-      `${scheme}// pages cannot be driven: Chrome blocks both the debugger and ` +
-      `script injection on them. Navigate the tab somewhere else first.`
+      `${scheme}// pages cannot be driven: the browser blocks both the debugger and ` +
+      `script injection on them. Use an http(s) URL instead.`
+    );
+  }
+  // Schemes the extension navigation API rejects outright. Caught here so the
+  // caller gets a remedy it can actually use, rather than Chrome's raw advice
+  // to call an extension API the caller has no access to.
+  if (scheme === "javascript:") {
+    return (
+      "javascript: URLs cannot be navigated to. Use javascript_eval to run code " +
+      "on the current page instead."
+    );
+  }
+  if (scheme === "data:" || scheme === "blob:") {
+    return (
+      `${scheme} URLs cannot be navigated to by an extension. Open an http(s) URL, ` +
+      `or build the content on a real page with javascript_eval.`
     );
   }
   return null;

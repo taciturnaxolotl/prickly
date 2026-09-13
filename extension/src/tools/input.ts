@@ -576,7 +576,40 @@ export async function typeText(tabId: number, text: string): Promise<void> {
 }
 
 /** Page-zoom chords would desync the screenshot mapping, so they are refused. */
-const FORBIDDEN_CHORDS = ["cmd+=", "cmd+-", "cmd+0", "ctrl+=", "ctrl+-", "ctrl+0"];
+const FORBIDDEN_CHORDS = [
+  "cmd+=", "cmd+-", "cmd+0", "cmd+plus", "cmd+minus",
+  "ctrl+=", "ctrl+-", "ctrl+0", "ctrl+plus", "ctrl+minus",
+  "meta+=", "meta+-", "meta+0", "meta+plus", "meta+minus",
+];
+
+/**
+ * Whether every part of a chord is a key we can actually send.
+ *
+ * Unknown names used to be dispatched as nothing at all and reported back as
+ * if they had worked, so a typo was indistinguishable from a real keypress.
+ * It also left a hole in the zoom guard: "cmd+=" was refused while "cmd+plus"
+ * sailed through and silently did nothing.
+ */
+export function unknownKeyName(chord: string): string | null {
+  const parts = chord.split("+").map((p) => p.trim().toLowerCase()).filter(Boolean);
+  if (!parts.length) return `"${chord}" is not a key.`;
+  const key = parts[parts.length - 1]!;
+  const modifiers = parts.slice(0, -1);
+
+  const badModifier = modifiers.find((m) => MODIFIER_BITS[m] === undefined);
+  if (badModifier) {
+    return `"${badModifier}" is not a modifier. Use ctrl, shift, alt, or cmd (meta).`;
+  }
+  if (NAMED_KEYS[key] || key.length === 1) return null;
+
+  const known = Object.keys(NAMED_KEYS).sort();
+  const near = known.filter((k) => k.startsWith(key.slice(0, 3)));
+  return (
+    `"${key}" is not a key name. ` +
+    (near.length ? `Did you mean ${near.slice(0, 3).join(", ")}? ` : "") +
+    `Use a single character, or one of: ${known.slice(0, 18).join(", ")}...`
+  );
+}
 
 export function forbiddenChord(chord: string): string | null {
   const normalized = chord.toLowerCase().replace(/\s+/g, "");
