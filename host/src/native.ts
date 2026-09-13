@@ -21,6 +21,7 @@ import {
 } from "./registry";
 import { PricklyError, type BrowserIdentity, type Request } from "../../shared/protocol";
 import { HOST_VERSION } from "./version";
+import { resolveProfile } from "./profile";
 
 const STDIN = Bun.file(0).stream();
 const STDOUT = Bun.file(1).writer();
@@ -79,10 +80,25 @@ peer.handle("register", async (params) => {
   });
   await server.listen();
 
+  // The extension can only guess its profile from the user agent, which reads
+  // "Chrome" on Dia and Arc. The host can do better: the browser leaves its
+  // bundle id in our environment, and the real profile name is on disk keyed
+  // by the browserId the extension just reported.
+  const resolved = resolveProfile(
+    process.env.__CFBundleIdentifier,
+    identity.extensionId,
+    identity.browserId,
+  );
+  const profile = resolved?.name ?? identity.profile;
+  const browser = resolved?.browser ?? identity.browser;
+  if (resolved) {
+    log(`resolved profile: ${resolved.browser} / ${resolved.name} (${resolved.directory})`);
+  }
+
   const descriptor: BrowserDescriptor = {
     browserId: identity.browserId,
-    profile: identity.profile,
-    browser: identity.browser,
+    profile,
+    browser,
     browserVersion: identity.browserVersion,
     platform: identity.platform,
     extensionId: identity.extensionId,
@@ -93,7 +109,7 @@ peer.handle("register", async (params) => {
     hostVersion: HOST_VERSION,
   };
   writeDescriptor(descriptor);
-  log(`serving ${identity.profile} (${identity.browser}) on ${sock}`);
+  log(`serving ${profile} (${identity.browser}) on ${sock}`);
 
   // The reply to register is the whole handshake: it carries the socket back
   // to the extension's connect() promise. No separate hello round-trip, which
