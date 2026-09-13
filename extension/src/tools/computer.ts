@@ -146,6 +146,14 @@ defineTool({
     const notes: string[] = [];
     const dialogsBefore = takeDialogs(tabId).length;
 
+    // Pixel actions need a rendered surface. A backgrounded profile has a 0x0
+    // viewport, where a click resolves to (x, 0) and reports a misleading
+    // "covered by another element" instead of the real cause. Check once, up
+    // front, so every geometric action gives the same actionable message.
+    const needsPixels =
+      args.action !== "wait" && args.action !== "wait_for_text";
+    if (needsPixels) await assertRenderable(tabId);
+
     switch (args.action) {
       case "screenshot":
         return await doScreenshot(tabId, args, notes, dialogsBefore);
@@ -296,6 +304,26 @@ defineTool({
     };
   },
 });
+
+/**
+ * Fails with a clear message when the tab has no rendered surface, so clicks,
+ * scrolls, and screenshots all report the real cause (a backgrounded 0x0
+ * profile) instead of a cryptic geometry error.
+ */
+async function assertRenderable(tabId: number): Promise<void> {
+  const size = await evalInPage<{ w: number; h: number; hidden: boolean }>(
+    tabId,
+    `({ w: innerWidth, h: innerHeight, hidden: document.visibilityState === "hidden" })`,
+  ).catch(() => null);
+  if (size && (size.w === 0 || size.h === 0)) {
+    throw new PricklyError(
+      "This tab has no rendered viewport (0x0): its browser profile is backgrounded or hidden. " +
+        "Pixel tools (click, scroll, screenshot) need it in the foreground. read_page, find, " +
+        "get_page_text, javascript_eval, and the network tools all still work in the background.",
+      "internal",
+    );
+  }
+}
 
 async function refPoint(tabId: number, ref: string): Promise<{ x: number; y: number }> {
   const rect = await refRect(tabId, ref);

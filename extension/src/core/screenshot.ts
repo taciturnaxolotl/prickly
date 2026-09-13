@@ -106,6 +106,22 @@ export async function capture(
   const viewportWidth = metrics.cssLayoutViewport.clientWidth;
   const viewportHeight = metrics.cssLayoutViewport.clientHeight;
 
+  // A backgrounded profile (Dia when you swipe away from it) has no rendered
+  // surface: the layout viewport collapses to 0x0. Screenshots and clicks
+  // cannot work without pixels, and the raw failure is a cryptic CDP
+  // deserialize error, so catch it here and say what is actually wrong. The
+  // DOM, network, and eval tools keep working in the background; only the
+  // pixel-based ones need the profile in the foreground.
+  if (viewportWidth === 0 || viewportHeight === 0) {
+    throw new PricklyError(
+      "This tab has no rendered viewport (0x0), which means its browser profile is backgrounded " +
+        "or hidden. Pixel tools (screenshot, click, scroll) need a visible profile: bring it to " +
+        "the foreground. Meanwhile read_page, find, get_page_text, javascript_eval, and the " +
+        "network tools all still work in the background.",
+      "internal",
+    );
+  }
+
   /**
    * clip.scale is applied on top of the device pixel ratio, not instead of it,
    * so on a retina display a scale of 1 yields an image twice the CSS size and

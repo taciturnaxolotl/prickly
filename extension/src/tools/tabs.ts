@@ -19,6 +19,7 @@ import {
 import { assertAllowed, assertDrivable } from "../core/guards";
 import { geometryFor, forgetGeometry } from "../core/screenshot";
 import { forget as forgetNetwork } from "../core/network";
+import { evalInPage } from "../core/page";
 
 defineTool({
   name: "tabs_context",
@@ -203,6 +204,24 @@ defineTool({
       height: args.height,
     });
     forgetGeometry(args.tabId);
-    return text(`Resized window ${tab.windowId} to ${args.width}x${args.height}. Take a new screenshot.`);
+
+    // A resize on a backgrounded profile is accepted but changes nothing, since
+    // a hidden window has no layout. Report that honestly rather than claiming a
+    // resize that did not happen.
+    const inner = await evalInPage<{ w: number; h: number }>(
+      args.tabId,
+      `({ w: innerWidth, h: innerHeight })`,
+    ).catch(() => null);
+    if (inner && (inner.w === 0 || inner.h === 0)) {
+      return text(
+        `Requested ${args.width}x${args.height}, but the tab's viewport is still 0x0: its profile ` +
+          `is backgrounded, so the window cannot take a size. Foreground the profile first.`,
+      );
+    }
+    return text(
+      `Resized window ${tab.windowId} to ${args.width}x${args.height}` +
+        (inner ? ` (viewport now ${inner.w}x${inner.h})` : "") +
+        `. Take a new screenshot.`,
+    );
   },
 });
