@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Prickly</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1c1c1e;
+        --muted: #6b6b70;
+        --line: #d8d8dc;
+        --accent: #b8442a;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e8e6e3;
+          --muted: #9a978f;
+          --line: #3a3a3c;
+          --accent: #e07a5f;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 28px 32px 40px;
+        font: 14px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+        color: var(--fg);
+        background: Canvas;
+        max-width: 640px;
+      }
+      h1 { font-size: 16px; margin: 0 0 4px; letter-spacing: -0.01em; }
+      p.lede { margin: 0 0 24px; color: var(--muted); font-size: 13px; }
+      section { border-top: 1px solid var(--line); padding: 20px 0; }
+      h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; font-weight: 500; }
+      label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+      input, textarea {
+        width: 100%;
+        padding: 8px 10px;
+        font: inherit;
+        color: var(--fg);
+        background: Canvas;
+        border: 1px solid var(--line);
+        border-radius: 3px;
+      }
+      textarea { min-height: 120px; resize: vertical; }
+      input:focus, textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+      button {
+        margin-top: 10px;
+        padding: 7px 14px;
+        font: inherit;
+        color: Canvas;
+        background: var(--accent);
+        border: 0;
+        border-radius: 3px;
+        cursor: pointer;
+      }
+      dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 13px; }
+      dt { color: var(--muted); }
+      dd { margin: 0; word-break: break-all; }
+      .saved { color: var(--accent); font-size: 12px; margin-left: 10px; opacity: 0; transition: opacity 200ms; }
+      .saved.on { opacity: 1; }
+      code.hint { color: var(--muted); font-size: 12px; display: block; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1>prickly</h1>
+    <p class="lede">browser use! but slightly less prickly</p>
+
+    <section>
+      <h2>This browser</h2>
+      <dl id="identity"></dl>
+    </section>
+
+    <section>
+      <h2>Profile label</h2>
+      <label for="label">What an agent should call this profile</label>
+      <input id="label" type="text" placeholder="dia" spellcheck="false" />
+      <button id="save-label">save</button><span class="saved" id="label-saved">saved</span>
+      <code class="hint">Shown to agents so they can pick between several browsers.</code>
+    </section>
+
+    <section>
+      <h2>Denylist</h2>
+      <label for="deny">One host per line. Optional <code>/path</code> suffix and <code># note</code>.</label>
+      <textarea id="deny" spellcheck="false" placeholder="bank.example.com&#10;*.internal.example.com /admin # staging is fine, prod is not"></textarea>
+      <button id="save-deny">save</button><span class="saved" id="deny-saved">saved</span>
+      <code class="hint">Navigation to a listed host is refused. No network calls, no server classification.</code>
+    </section>
+
+    <section>
+      <h2>Debug</h2>
+      <label for="strip">Strip other extensions' iframes when debugger attach fails</label>
+      <input id="strip" type="checkbox" style="width: auto" />
+      <code class="hint">Off if a password manager starts misbehaving.</code>
+    </section>
+
+    <script src="options.js"></script>
+  </body>
+</html>

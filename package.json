@@ -1,0 +1,22 @@
+{
+  "name": "prickly",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "browser use! but slightly less prickly",
+  "license": "MIT",
+  "bin": {
+    "prickly": "./host/bin/prickly.ts"
+  },
+  "scripts": {
+    "build": "bun run extension/build.ts",
+    "dev": "bun run extension/build.ts --watch",
+    "install-host": "bun run scripts/install-host.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/chrome": "^0.0.287",
+    "typescript": "^5.7.0"
+  }
+}
