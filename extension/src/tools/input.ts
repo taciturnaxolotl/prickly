@@ -340,26 +340,86 @@ interface KeySpec {
   text?: string;
 }
 
-function specFor(raw: string): KeySpec {
-  const lower = raw.toLowerCase();
+/**
+ * DOM identity for a named key: what `event.key` and `event.code` must be.
+ *
+ * These are exact, case-sensitive strings from the UI Events spec. Deriving
+ * them by capitalising the first letter produced "Arrowdown" and a nonsense
+ * code, which Chrome discarded, so pages reading `e.key === "ArrowDown"` (every
+ * modern menu, combobox, and listbox) saw nothing at all while the tool
+ * reported success.
+ */
+const NAMED_KEYS: Record<string, { key: string; code: string; vk: number }> = {
+  arrowdown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", vk: 38 },
+  arrowleft: { key: "ArrowLeft", code: "ArrowLeft", vk: 37 },
+  arrowright: { key: "ArrowRight", code: "ArrowRight", vk: 39 },
+  enter: { key: "Enter", code: "Enter", vk: 13 },
+  return: { key: "Enter", code: "Enter", vk: 13 },
+  tab: { key: "Tab", code: "Tab", vk: 9 },
+  escape: { key: "Escape", code: "Escape", vk: 27 },
+  esc: { key: "Escape", code: "Escape", vk: 27 },
+  // The spec says a space key reports a literal space, not the word.
+  space: { key: " ", code: "Space", vk: 32 },
+  backspace: { key: "Backspace", code: "Backspace", vk: 8 },
+  delete: { key: "Delete", code: "Delete", vk: 46 },
+  insert: { key: "Insert", code: "Insert", vk: 45 },
+  home: { key: "Home", code: "Home", vk: 36 },
+  end: { key: "End", code: "End", vk: 35 },
+  pageup: { key: "PageUp", code: "PageUp", vk: 33 },
+  pagedown: { key: "PageDown", code: "PageDown", vk: 34 },
+  capslock: { key: "CapsLock", code: "CapsLock", vk: 20 },
+  shift: { key: "Shift", code: "ShiftLeft", vk: 16 },
+  control: { key: "Control", code: "ControlLeft", vk: 17 },
+  ctrl: { key: "Control", code: "ControlLeft", vk: 17 },
+  alt: { key: "Alt", code: "AltLeft", vk: 18 },
+  option: { key: "Alt", code: "AltLeft", vk: 18 },
+  meta: { key: "Meta", code: "MetaLeft", vk: 91 },
+  cmd: { key: "Meta", code: "MetaLeft", vk: 91 },
+  command: { key: "Meta", code: "MetaLeft", vk: 91 },
+  win: { key: "Meta", code: "MetaLeft", vk: 91 },
+};
+for (let n = 1; n <= 12; n++) {
+  NAMED_KEYS[`f${n}`] = { key: `F${n}`, code: `F${n}`, vk: 111 + n };
+}
 
-  if (lower.length === 1) {
-    const code = /[a-z]/.test(lower) ? `Key${lower.toUpperCase()}` : `Digit${lower}`;
+/** Physical codes for punctuation, so `event.code` is right for those too. */
+const PUNCT_CODES: Record<string, string> = {
+  "-": "Minus", "=": "Equal", "[": "BracketLeft", "]": "BracketRight",
+  "\\": "Backslash", ";": "Semicolon", "'": "Quote", ",": "Comma",
+  ".": "Period", "/": "Slash", "`": "Backquote", " ": "Space",
+};
+
+function specFor(raw: string): KeySpec {
+  const named = NAMED_KEYS[raw.toLowerCase()];
+  if (named) {
     return {
-      key: lower,
-      code,
-      windowsVirtualKeyCode: lower.toUpperCase().charCodeAt(0),
-      text: lower,
+      key: named.key,
+      code: named.code,
+      windowsVirtualKeyCode: named.vk,
+      ...(named.key === " " ? { text: " " } : {}),
     };
   }
 
-  const code = `${lower.charAt(0).toUpperCase()}${lower.slice(1)}`;
-  return {
-    key: code,
-    code: KEY_CODES[lower] !== undefined ? `Named${code}` : code,
-    windowsVirtualKeyCode: KEY_CODES[lower] ?? 0,
-  };
+  if (raw.length === 1) {
+    const lower = raw.toLowerCase();
+    const code = /[a-z]/.test(lower)
+      ? `Key${lower.toUpperCase()}`
+      : /[0-9]/.test(lower)
+        ? `Digit${lower}`
+        : (PUNCT_CODES[lower] ?? "");
+    return {
+      key: raw,
+      code,
+      windowsVirtualKeyCode: lower.toUpperCase().charCodeAt(0),
+      text: raw,
+    };
+  }
+
+  // Unknown name: pass it through rather than inventing a bogus code.
+  return { key: raw, code: "", windowsVirtualKeyCode: 0 };
 }
+
 
 /**
  * A chord like "cmd+shift+k" or a single key. `commands` is what makes
