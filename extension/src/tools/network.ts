@@ -14,6 +14,7 @@ import { resolveTab } from "../core/sessions";
 import { assertDrivable } from "../core/guards";
 import {
   addRule,
+  captureState,
   clearCapture,
   disableInterception,
   enableInterception,
@@ -30,6 +31,43 @@ import {
 } from "../core/network";
 
 const MAX_BODY_CHARS = 100_000;
+
+/** "Fetch: 33, Image: 210, Script: 40" for the largest few types. */
+function typeBreakdown(requests: CapturedRequest[]): string {
+  const counts = new Map<string, number>();
+  for (const r of requests) {
+    const t = r.resourceType ?? "Other";
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([t, n]) => `${t}: ${n}`)
+    .join(", ");
+}
+
+/** Walks a dot path into a JSON body and returns that slice re-serialized. */
+function sliceJsonPath(body: string, path: string): string | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  for (const key of path.split(".")) {
+    if (value === null || value === undefined) return undefined;
+    if (Array.isArray(value)) {
+      const index = Number(key);
+      if (!Number.isInteger(index)) return undefined;
+      value = value[index];
+    } else if (typeof value === "object") {
+      value = (value as Record<string, unknown>)[key];
+    } else {
+      return undefined;
+    }
+  }
+  if (value === undefined) return undefined;
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
 
 function shortUrl(url: string): string {
   try {
@@ -132,17 +170,35 @@ defineTool({
   },
   async execute(args, ctx) {
     const tabId = await tabIdFor(ctx, args.tabId);
+    const state = captureState(tabId);
+    const buffered = state?.requests.length ?? 0;
     const results = query(tabId, args);
 
     if (!results.length) {
+      // Distinguish "nothing captured" from "filter too narrow" by reporting
+      // the buffer size and what resource types are actually in it. A capture
+      // that started after the page loaded shows up as a near-empty buffer, and
+      // an over-narrow filter shows up as a full buffer with zero matches.
+      if (buffered === 0) {
+        const age = state ? Math.round((Date.now() - state.startedAt) / 1000) : 0;
+        return text(
+          `Nothing has been captured yet (buffer empty, capture running ${age}s). ` +
+            `If the page loaded before capture started, its bootstrap requests are gone; ` +
+            `reload the tab (navigate to the same URL) to capture them, then read again.`,
+        );
+      }
+      const breakdown = typeBreakdown(state!.requests);
       return text(
-        `No captured requests match. Either nothing has been requested since the capture started, ` +
-          `or the filter is too narrow. Drive the page and try again.`,
+        `0 of ${buffered} buffered requests match this filter.`,
+        `The buffer has: ${breakdown}.`,
+        `Loosen the filter. Note XHR and Fetch are separate types and modern apps ` +
+          `use Fetch, so filtering resourceType:XHR alone often misses the API; omit ` +
+          `resourceType to see both.`,
       );
     }
 
     const lines = results.map(lineFor);
-    const header = `${results.length} request(s) on tab ${tabId}:`;
+    const header = `${results.length} of ${buffered} buffered request(s) on tab ${tabId}:`;
     const footer = args.clear
       ? "Buffer cleared."
       : `Use network_request_get with a requestId for headers and body.`;
@@ -168,7 +224,19 @@ defineTool({
         "the token is usually the point. Set true to keep secrets out of the transcript.",
       default: false,
     }),
-    maxChars: s.number({ description: "Body truncation.", integer: true, min: 500, max: MAX_BODY_CHARS, default: 20_000 }),
+    maxChars: s.number({ description: "Body characters to show from the offset.", integer: true, min: 500, max: MAX_BODY_CHARS, default: 20_000 }),
+    bodyOffset: s.number({
+      description: "Start showing the body this many characters in, to page through a large body.",
+      integer: true,
+      min: 0,
+      default: 0,
+    }),
+    jsonPath: s.string({
+      description:
+        "For a JSON body, a dot path to show only that slice, e.g. \"response.messages.0\". " +
+        "Cuts a huge body down to the field you want instead of paging.",
+      optional: true,
+    }),
   },
   async execute(args, ctx) {
     const tabId = await tabIdFor(ctx, args.tabId);
@@ -195,20 +263,35 @@ defineTool({
     }
 
     if (args.includeBody && record.body) {
-      const shown = record.body.slice(0, args.maxChars);
+      // A jsonPath slice beats paging for pulling one field out of a big body.
+      let body = record.body;
+      let sliceNote = "";
+      if (args.jsonPath) {
+        const sliced = sliceJsonPath(body, args.jsonPath);
+        if (sliced === undefined) {
+          sliceNote = ` (jsonPath "${args.jsonPath}" not found; showing whole body)`;
+        } else {
+          body = sliced;
+          sliceNote = ` (sliced to ${args.jsonPath})`;
+        }
+      }
+      const start = Math.min(args.bodyOffset, body.length);
+      const shown = body.slice(start, start + args.maxChars);
+      const end = start + shown.length;
       lines.push(
         "",
-        `response body (${record.bodyEncoding}, ${record.body.length} chars` +
+        `response body (${record.bodyEncoding}, ${body.length} chars${sliceNote}` +
           (record.bodyTruncated ? ", truncated at capture" : "") +
-          (record.body.length > shown.length ? `, showing ${shown.length}` : "") +
+          (start > 0 || end < body.length ? `, showing ${start}-${end}` : "") +
           "):",
         shown,
+        end < body.length ? `\n[${body.length - end} more chars; pass bodyOffset:${end} to continue]` : "",
       );
     } else if (args.includeBody && !record.body) {
       lines.push("", "(no body captured; it may have been evicted, or maxBodyBytes was 0)");
     }
 
-    return { content: [{ type: "text", text: lines.join("\n") }], meta: { summary } };
+    return { content: [{ type: "text", text: lines.filter((l) => l !== "").join("\n") }], meta: { summary } };
   },
 });
 

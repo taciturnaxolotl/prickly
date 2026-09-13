@@ -53,14 +53,29 @@ defineTool({
     const settled = await waitForSettle(tab.id!, args.timeoutMs);
     const after = await chrome.tabs.get(tab.id!);
 
+    // A single-page app can bounce a deep link to a different route, so a
+    // requested URL that does not match where we landed is worth flagging
+    // rather than reporting a bare success at the wrong page.
+    const requested = isHistory ? null : resolveUrl(args.url, tab.url);
+    const landed = after.url ?? "";
+    const redirected =
+      requested !== null && stripHash(requested) !== stripHash(landed);
+
     return text(
       settled
-        ? `Navigated to ${after.url}`
-        : `Navigated to ${after.url}, but the page was still loading after ${args.timeoutMs}ms. Re-read it before acting.`,
+        ? `Navigated to ${landed}`
+        : `Navigated to ${landed}, but the page was still loading after ${args.timeoutMs}ms. Re-read it before acting.`,
+      redirected ? `(note: the page redirected; you asked for ${requested})` : "",
       before !== originOf(after.url) ? `(origin changed: ${before} -> ${originOf(after.url)})` : "",
     );
   },
 });
+
+/** Compares URLs ignoring the fragment, which SPAs rewrite freely. */
+function stripHash(url: string): string {
+  const hash = url.indexOf("#");
+  return hash === -1 ? url : url.slice(0, hash);
+}
 
 function resolveUrl(input: string, base: string | undefined): string {
   try {

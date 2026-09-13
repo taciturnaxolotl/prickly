@@ -21,6 +21,13 @@ const POST_ATTACH_SETTLE_MS = 400;
 const ATTACH_ATTEMPTS = 4;
 const ATTACH_RETRY_MS = 200;
 
+/**
+ * Ceiling for a single CDP command. Long enough for a slow screenshot or a
+ * heavy Runtime.evaluate, short enough that a wedged renderer fails well before
+ * the agent's own request timeout. Individual calls can pass a larger value.
+ */
+const CDP_COMMAND_TIMEOUT_MS = 30_000;
+
 export type CdpEventHandler = (params: unknown) => void;
 
 /** Domains cost real overhead, so we enable each one at most once per attach. */
@@ -128,16 +135,28 @@ export class CdpSession {
   async send<T = unknown>(
     method: string,
     params: Record<string, unknown> = {},
+    timeoutMs = CDP_COMMAND_TIMEOUT_MS,
   ): Promise<T> {
     await this.attach();
     this.inFlight++;
     try {
-      return (await chrome.debugger.sendCommand(
-        { tabId: this.tabId },
-        method,
-        params,
-      )) as T;
+      // chrome.debugger.sendCommand never rejects on its own when the renderer
+      // wedges (a heavy virtualized list mid-scroll, a stuck navigation), so a
+      // single command could otherwise block until the agent's own ceiling.
+      // Racing a timer turns a wedge into a fast, legible failure.
+      const command = chrome.debugger.sendCommand({ tabId: this.tabId }, method, params);
+      const result = await Promise.race([
+        command,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new PricklyError(`CDP ${method} timed out after ${timeoutMs}ms`, "timeout")),
+            timeoutMs,
+          ),
+        ),
+      ]);
+      return result as T;
     } catch (err) {
+      if (err instanceof PricklyError) throw err;
       throw new PricklyError(
         `CDP ${method} failed: ${String((err as Error)?.message ?? err)}`,
         "internal",

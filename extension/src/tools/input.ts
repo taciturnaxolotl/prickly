@@ -183,16 +183,35 @@ export async function scroll(
   y: number,
   deltaX: number,
   deltaY: number,
-): Promise<void> {
+): Promise<{ moved: boolean }> {
   const [vx, vy] = toViewport(tabId, x, y);
-  await cdp(tabId).send("Input.dispatchMouseEvent", {
-    type: "mouseWheel",
-    x: vx,
-    y: vy,
-    deltaX,
-    deltaY,
+  const session = cdp(tabId);
+
+  // Scroll by moving the scrollable element under the point directly, not by
+  // dispatching a synthetic wheel event. CDP Input.dispatchMouseEvent with
+  // type "mouseWheel" never resolves on some Chromium forks (Dia/ArcCore), so
+  // it would hang the whole call. Driving scrollTop through Runtime.evaluate is
+  // reliable everywhere and reports whether anything actually moved.
+  const r = await session.send<{ result: { value?: { moved: boolean } } }>("Runtime.evaluate", {
+    expression: `(() => {
+      let el = document.elementFromPoint(${vx}, ${vy});
+      while (el) {
+        const s = getComputedStyle(el);
+        const scrollsY = /(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight;
+        const scrollsX = /(auto|scroll)/.test(s.overflowX) && el.scrollWidth > el.clientWidth;
+        if ((${deltaY} !== 0 && scrollsY) || (${deltaX} !== 0 && scrollsX)) break;
+        el = el.parentElement;
+      }
+      const target = el || document.scrollingElement || document.documentElement;
+      const beforeY = target.scrollTop, beforeX = target.scrollLeft;
+      target.scrollBy(${deltaX}, ${deltaY});
+      const moved = Math.abs(target.scrollTop - beforeY) > 1 || Math.abs(target.scrollLeft - beforeX) > 1;
+      return { moved };
+    })()`,
+    returnByValue: true,
   });
   await sleep(80);
+  return { moved: r.result.value?.moved ?? false };
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +361,7 @@ export async function pressKeyChord(
       nativeVirtualKeyCode: spec.windowsVirtualKeyCode,
       modifiers: bits,
       ...(spec.text ? { text: spec.text, unmodifiedText: spec.text } : {}),
-      ...(commands ? { commands: [{ name: commands }] } : {}),
+      ...(commands ? { commands: [commands] } : {}),
     });
     await session.send("Input.dispatchKeyEvent", {
       type: "keyUp",
@@ -351,7 +370,7 @@ export async function pressKeyChord(
       windowsVirtualKeyCode: spec.windowsVirtualKeyCode,
       nativeVirtualKeyCode: spec.windowsVirtualKeyCode,
       modifiers: bits,
-      ...(commands ? { commands: [{ name: commands }] } : {}),
+      ...(commands ? { commands: [commands] } : {}),
     });
     if (i + 1 < repeat) await sleep(30);
   }

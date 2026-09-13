@@ -218,8 +218,13 @@ defineTool({
           : dir === "up" ? [0, -amount]
           : dir === "right" ? [amount, 0]
           : [-amount, 0];
-        await scroll(tabId, point.x, point.y, dx, dy);
-        notes.push(`scrolled ${dir} by ${amount}`);
+        const scrolled = await scroll(tabId, point.x, point.y, dx, dy);
+        notes.push(
+          scrolled.moved
+            ? `scrolled ${dir} by ${amount}`
+            : `scroll ${dir} moved nothing here; the target under this point is not scrollable ` +
+              `(aim at the list you mean, or use scroll_to with a ref)`,
+        );
         break;
       }
 
