@@ -23,6 +23,7 @@ import { executeTool, listTools } from "./core/registry";
 import { handleNetworkEvent, handleRequestPaused, forget as forgetNetwork } from "./core/network";
 import { forgetGeometry } from "./core/screenshot";
 import { forgetWorld } from "./core/page";
+import { closeSessionsForClient, reapOrphanSessions, sweepGroups } from "./core/sessions";
 
 // Registering a tool has the side effect of putting it in the registry.
 import "./tools/tabs";
@@ -117,6 +118,26 @@ connection.on("reload", async () => {
   return { reloading: true, note: "reconnects within a few seconds" };
 });
 
+/**
+ * The host reports when an agent's connection drops. An agent that crashed or
+ * timed out never calls session_close itself, so its tab group would otherwise
+ * sit in the user's browser forever.
+ */
+connection.on("sessions/abandoned", async (params) => {
+  const { sessionIds } = (params ?? {}) as { sessionIds?: string[] };
+  if (!sessionIds?.length) return { closed: 0 };
+  const closed = await closeSessionsForClient(sessionIds);
+  if (closed) console.log(`[prickly] closed ${closed} session(s) whose agent disconnected`);
+  return { closed };
+});
+
+/** Manual tidy-up, used by `prickly clean`. */
+connection.on("sessions/sweep", async (params) => {
+  const { groupIds } = (params ?? {}) as { groupIds?: number[] };
+  const closed = await sweepGroups(groupIds);
+  return { closed };
+});
+
 connection.on("get_status", async () => {
   const me = await identityPromise;
   return { ...connection.status(), identity: me, tools: listTools().length };
@@ -209,6 +230,9 @@ chrome.action.onClicked.addListener(() => {
 async function bootstrap(): Promise<void> {
   await chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 });
   await ensureOffscreen();
+  // Tab groups from a previous life have no agent attached, so they are litter.
+  const reaped = await reapOrphanSessions().catch(() => 0);
+  if (reaped) console.log(`[prickly] closed ${reaped} abandoned session(s) from a previous run`);
   await connection.connect(identityPromise);
 }
 

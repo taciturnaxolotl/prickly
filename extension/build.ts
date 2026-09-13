@@ -60,6 +60,12 @@ async function build(): Promise<void> {
     cpSync(join(ROOT, "public", file), join(OUT, file));
   }
 
+  // Icons ship as generated PNGs; icon.svg and make-icon.ts are the source.
+  mkdirSync(join(OUT, "icons"), { recursive: true });
+  for (const size of [16, 32, 48, 128]) {
+    cpSync(join(ROOT, "icons", `icon${size}.png`), join(OUT, "icons", `icon${size}.png`));
+  }
+
   const manifest = JSON.parse(readFileSync(join(ROOT, "manifest.json"), "utf8"));
   manifest.version = process.env.PRICKLY_VERSION ?? manifest.version;
   writeFileSync(join(OUT, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

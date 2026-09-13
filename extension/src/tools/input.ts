@@ -386,6 +386,52 @@ export async function pressKeyChord(
  * keydown handlers fire; everything else (emoji, CJK, accents) goes through
  * insertText, because synthesizing those is a losing game.
  */
+/**
+ * Best-effort physical key identity for a character, so handlers that read
+ * `code`/`keyCode` still work. Omitted for anything unmapped; the literal
+ * `text` is what actually inserts the character.
+ */
+function charIdentity(char: string): { code: string; vk: number } | null {
+  if (/^[a-zA-Z]$/.test(char)) {
+    return { code: `Key${char.toUpperCase()}`, vk: char.toUpperCase().charCodeAt(0) };
+  }
+  if (/^[0-9]$/.test(char)) return { code: `Digit${char}`, vk: char.charCodeAt(0) };
+  if (char === " ") return { code: "Space", vk: 32 };
+  return null;
+}
+
+/**
+ * Types one character as a real key event.
+ *
+ * The character travels in `text`, never through chord parsing. Routing
+ * characters through the chord parser was a real bug: it split on "+",
+ * lowercased, and dropped whitespace, so a space raised "Empty key chord",
+ * capitals came out lowercase, and punctuation picked up a nonsense keycode
+ * (a period became keycode 46, Delete). Passing the literal character keeps
+ * keydown/keypress firing for page handlers while inserting exactly what was
+ * asked for.
+ */
+async function typeChar(tabId: number, char: string): Promise<void> {
+  const id = charIdentity(char);
+  const common = id
+    ? { code: id.code, windowsVirtualKeyCode: id.vk, nativeVirtualKeyCode: id.vk }
+    : {};
+  const session = cdp(tabId);
+  await session.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: char,
+    text: char,
+    unmodifiedText: char,
+    ...common,
+  });
+  await session.send("Input.dispatchKeyEvent", { type: "keyUp", key: char, ...common });
+}
+
+/**
+ * Types a string. Printable characters go through real key events so pages
+ * that listen for keydown react; anything a key event cannot represent (emoji,
+ * CJK, combining marks) is batched into insertText.
+ */
 export async function typeText(tabId: number, text: string): Promise<void> {
   const session = cdp(tabId);
   let pending = "";
@@ -407,10 +453,10 @@ export async function typeText(tabId: number, text: string): Promise<void> {
       await pressKeyChord(tabId, "tab");
       continue;
     }
-    // Printable ASCII, minus the space we would rather send as text anyway.
+    // Printable ASCII, space included, as literal key events.
     if (/^[ -~]$/.test(char)) {
-      await pressKeyChord(tabId, char);
-      await sleep(8);
+      await flush();
+      await typeChar(tabId, char);
       continue;
     }
     pending += char;

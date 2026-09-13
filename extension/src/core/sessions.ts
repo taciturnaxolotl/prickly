@@ -15,8 +15,15 @@ import { PricklyError } from "@shared/protocol";
 
 export type SessionState = "idle" | "running" | "attention" | "done";
 
+/**
+ * State lives in the group colour, which is one of only three things an
+ * extension can set on a tab group (title, colour, collapsed) and the one
+ * built to carry status. Grey is deliberately unused: it reads as "no colour"
+ * next to the user's own groups, so an idle agent would look like a glitch
+ * rather than a deliberate, resting session.
+ */
 const STATE_COLOR: Record<SessionState, chrome.tabGroups.ColorEnum> = {
-  idle: "grey",
+  idle: "purple",
   running: "blue",
   attention: "red",
   done: "green",
@@ -31,14 +38,35 @@ export interface Session {
   state: SessionState;
 }
 
+/**
+ * A short, distinctive label for a session id like "agent-68262-okh6".
+ *
+ * Truncating the front collides badly: several agents started from the same
+ * process family share a "agent-68" prefix and every group ends up with the
+ * same name. The last segment is the random part, so it is the one that
+ * actually tells two sessions apart at a glance.
+ */
+function shortLabel(sessionId: string): string {
+  const parts = sessionId.split(/[-:]/).filter(Boolean);
+  const last = parts[parts.length - 1] ?? sessionId;
+  return last.length >= 3 ? last : sessionId.slice(-6);
+}
+
 const STORAGE_KEY = "sessions";
 
-/** Write-through cache. chrome.storage.session survives service worker death. */
+/**
+ * Write-through cache, persisted in storage.local rather than storage.session.
+ *
+ * storage.session is wiped when the extension reloads, which orphaned every
+ * tab group it had created: the groups stayed in the browser but the extension
+ * no longer knew they were its own, so nothing could ever close them. local
+ * survives a reload, so a previous life's groups remain reclaimable.
+ */
 let cache: Map<string, Session> | null = null;
 
 async function load(): Promise<Map<string, Session>> {
   if (cache) return cache;
-  const stored = await chrome.storage.session.get(STORAGE_KEY);
+  const stored = await chrome.storage.local.get(STORAGE_KEY);
   const list = (stored[STORAGE_KEY] as Session[] | undefined) ?? [];
   cache = new Map(list.map((s) => [s.sessionId, s]));
   return cache;
@@ -46,7 +74,7 @@ async function load(): Promise<Map<string, Session>> {
 
 async function persist(): Promise<void> {
   if (!cache) return;
-  await chrome.storage.session.set({ [STORAGE_KEY]: [...cache.values()] });
+  await chrome.storage.local.set({ [STORAGE_KEY]: [...cache.values()] });
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +138,7 @@ export async function createSession(opts: CreateSessionOptions): Promise<Session
   const existing = await getSession(opts.sessionId);
   if (existing) return existing;
 
-  const title = opts.title ?? `prickly ${opts.sessionId.slice(0, 8)}`;
+  const title = opts.title ?? `prickly ${shortLabel(opts.sessionId)}`;
   const url = opts.url ?? "about:blank";
 
   let tabId: number;
@@ -295,4 +323,85 @@ export async function withRunningState<T>(
     await setSessionState(sessionId, "attention");
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Closes sessions recorded by a previous life of the extension.
+ *
+ * A session only means anything while the agent that opened it is connected.
+ * After a reload or a browser restart no agent is attached to the old groups,
+ * so they are litter by definition: close them rather than leave tab groups
+ * the user has to tidy by hand.
+ */
+export async function reapOrphanSessions(): Promise<number> {
+  const sessions = await load();
+  const ids = [...sessions.keys()];
+  let closed = 0;
+  for (const id of ids) {
+    try {
+      await closeSession(id);
+      closed++;
+    } catch {
+      // Group already gone; the record is dropped either way.
+    }
+  }
+  return closed;
+}
+
+/**
+ * Closes the sessions belonging to one agent, called when its connection drops.
+ * An agent that crashed or timed out never gets to call session_close itself,
+ * and that was the main source of abandoned tab groups.
+ */
+export async function closeSessionsForClient(sessionIds: string[]): Promise<number> {
+  let closed = 0;
+  for (const id of sessionIds) {
+    const existing = await getSession(id);
+    if (!existing) continue;
+    await closeSession(id).catch(() => {});
+    closed++;
+  }
+  return closed;
+}
+
+/**
+ * Closes tab groups directly, for tidying up groups whose session record was
+ * lost (an older extension build stored sessions somewhere a reload wiped).
+ * Without an explicit list this only touches groups whose title we set, so a
+ * user's own groups are never collateral.
+ */
+export async function sweepGroups(groupIds?: number[]): Promise<number> {
+  let targets: number[];
+  if (groupIds?.length) {
+    targets = groupIds;
+  } else {
+    const groups = await chrome.tabGroups.query({});
+    targets = groups
+      .filter((g) => (g.title ?? "").startsWith("prickly "))
+      .map((g) => g.id);
+  }
+
+  let closed = 0;
+  for (const groupId of targets) {
+    try {
+      const tabs = await chrome.tabs.query({ groupId });
+      const ids = tabs.map((t) => t.id).filter((id): id is number => id !== undefined);
+      if (ids.length) await chrome.tabs.remove(ids);
+      closed++;
+    } catch {
+      // Already gone.
+    }
+  }
+
+  // Drop any session records pointing at groups we just closed.
+  const sessions = await load();
+  for (const [id, s] of [...sessions]) {
+    if (targets.includes(s.tabGroupId)) sessions.delete(id);
+  }
+  await persist();
+  return closed;
 }

@@ -77,6 +77,12 @@ peer.handle("register", async (params) => {
     onRequest: (frame: Request, reply) => {
       void forwardToExtension(frame, reply);
     },
+    onClientGone: (sessionIds) => {
+      // The agent is gone, so its tab groups are litter. Tell the extension to
+      // close them rather than leaving them for the user to tidy by hand.
+      log(`client disconnected, closing ${sessionIds.length} session(s)`);
+      void peer.request("sessions/abandoned", { sessionIds }, 15_000).catch(() => {});
+    },
   });
   await server.listen();
 

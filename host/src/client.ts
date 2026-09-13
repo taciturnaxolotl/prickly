@@ -225,6 +225,8 @@ interface ClientSocketData {
 interface ServerSocketData {
   decoder?: FrameDecoder;
   writer?: SocketWriter;
+  /** Sessions this client touched, so they can be cleaned up when it drops. */
+  sessions?: Set<string>;
 }
 
 export class BrowserClient {
@@ -333,6 +335,8 @@ export class BrowserClient {
 export interface SocketServerHandlers {
   onRequest(frame: Request, reply: (result: unknown, error?: PricklyError) => void): void;
   broadcast?(event: ProtocolEvent): void;
+  /** An agent disconnected; these are the sessions it was driving. */
+  onClientGone?(sessionIds: string[]): void;
 }
 
 export class BrowserSocketServer {
@@ -365,6 +369,10 @@ export class BrowserSocketServer {
           }
           for (const frame of frames) {
             if (frame.kind !== "request") continue;
+            // Remember which sessions this client drives; if it disconnects
+            // without closing them, the host can tidy up on its behalf.
+            const sid = (frame.params as { session?: { sessionId?: string } })?.session?.sessionId;
+            if (sid) (socket.data.sessions ??= new Set()).add(sid);
             this.handlers.onRequest(frame, (result, error) => {
               const response: Response = error
                 ? { kind: "response", id: frame.id, error: error.toProtocol() }
@@ -388,6 +396,8 @@ export class BrowserSocketServer {
         },
         close: (socket: Socket<ServerSocketData>) => {
           this.clients.delete(socket);
+          const sessions = [...(socket.data.sessions ?? [])];
+          if (sessions.length) this.handlers.onClientGone?.(sessions);
         },
       },
     });

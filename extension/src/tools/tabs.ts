@@ -38,6 +38,12 @@ defineTool({
         "background tab can be driven just as well, and taking a window interrupts the user.",
       default: false,
     }),
+    title: s.string({
+      description:
+        "Name the tab group after what you are doing, e.g. \"scraping HN\". The user sees this " +
+        "in their tab strip, so a task name is far more useful than a random session id.",
+      optional: true,
+    }),
     url: s.string({ description: "URL to open when creating the group.", optional: true }),
   },
   async execute(args, ctx) {
@@ -64,6 +70,7 @@ defineTool({
         sessionId: ctx.sessionId,
         url: args.url,
         newWindow: args.newWindow,
+        title: args.title,
       });
     }
 

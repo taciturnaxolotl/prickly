@@ -49,6 +49,10 @@ switch (command) {
     await runReload();
     break;
 
+  case "clean":
+    await runClean();
+    break;
+
   default:
     console.log(`prickly ${command === "help" ? "" : `: unknown command "${command}"`}`.trim());
     console.log("");
@@ -58,6 +62,7 @@ switch (command) {
     console.log("  mcp                  run as an MCP server over stdio");
     console.log("  browsers             list connected browser profiles");
     console.log("  reload [--no-build]  rebuild and reload the extension in place");
+  console.log("  clean                close every open Prickly tab group");
   console.log("  probe [browser]      drive a browser from the shell:");
     console.log("                         probe dia 'tabs_context {\"createIfEmpty\":true}'");
     console.log("                         probe dia 'computer {\"action\":\"screenshot\"}'");
@@ -215,5 +220,38 @@ async function runReload(): Promise<void> {
       );
       process.exit(1);
     }
+  }
+}
+
+
+/**
+ * Closes every session the extension knows about, for tidying up after crashed
+ * or interrupted agents.
+ */
+async function runClean(): Promise<void> {
+  const browsers = listBrowsers();
+  if (!browsers.length) {
+    console.error("no browsers connected");
+    process.exit(1);
+  }
+  const explicit = process.argv
+    .slice(3)
+    .filter((a) => /^\d+$/.test(a))
+    .map((a) => Number(a));
+
+  for (const target of browsers) {
+    const client = new BrowserClient(target.socket);
+    await client.connect();
+    await client.hello("clean");
+    const result = await client
+      .request<{ closed: number }>("sessions/sweep", explicit.length ? { groupIds: explicit } : {}, 30_000)
+      .catch((err: Error) => ({ closed: -1, error: err.message }) as never);
+    const closed = (result as { closed: number }).closed;
+    console.log(
+      closed < 0
+        ? `${describe(target)}: sweep failed`
+        : `${describe(target)}: closed ${closed} tab group(s)`,
+    );
+    client.close();
   }
 }
