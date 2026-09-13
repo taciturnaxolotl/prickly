@@ -113,68 +113,93 @@ export interface DragOptions {
   steps?: number;
 }
 
-export async function drag(tabId: number, opts: DragOptions): Promise<void> {
+/**
+ * Drags from one point to another, completing an HTML5 drag properly.
+ *
+ * A plain press-move-release looks right and silently fails: Chrome promotes
+ * the synthetic press into a native drag session, then ends it with `dragend`
+ * and no `drop`, so every HTML5 drop target no-ops. The fix is to intercept the
+ * drag, take the real payload Chrome hands over, and deliver it at the target
+ * ourselves.
+ *
+ * Interception only applies to real HTML5 drags. Sliders, canvases, and custom
+ * mouse-driven reordering never produce a payload, so those fall back to the
+ * ordinary press-move-release, which is what they actually want.
+ */
+export async function drag(tabId: number, opts: DragOptions): Promise<{ html5: boolean }> {
   const steps = Math.max(2, opts.steps ?? 8);
   const [fx, fy] = toViewport(tabId, opts.from.x, opts.from.y);
   const [tx, ty] = toViewport(tabId, opts.to.x, opts.to.y);
   const session = cdp(tabId);
 
-  await session.send("Input.dispatchMouseEvent", {
-    type: "mouseMoved",
-    x: fx,
-    y: fy,
-    button: "none",
-    buttons: 0,
-  });
-  await session.send("Input.dispatchDragEvent", {
-    type: "dragEnter",
-    x: fx,
-    y: fy,
-    data: { items: [], dragOperationsMask: 1 },
-  }).catch(() => {
-    // dragEnter is unsupported on some targets; the move sequence still works.
-  });
-  await session.send("Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x: fx,
-    y: fy,
-    button: "left",
-    buttons: 1,
-    clickCount: 1,
+  let payload: unknown = null;
+  const stopListening = session.on("Input.dragIntercepted", (params) => {
+    payload = (params as { data?: unknown }).data ?? null;
   });
 
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    await session.send("Input.dispatchMouseEvent", {
+  const move = (x: number, y: number, buttons: number) =>
+    session.send("Input.dispatchMouseEvent", {
       type: "mouseMoved",
-      x: Math.round(fx + (tx - fx) * t),
-      y: Math.round(fy + (ty - fy) * t),
+      x: Math.round(x),
+      y: Math.round(y),
+      button: buttons ? "left" : "none",
+      buttons,
+    });
+
+  try {
+    await session.send("Input.setInterceptDrags", { enabled: true }).catch(() => {});
+
+    await move(fx, fy, 0);
+    await session.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: fx,
+      y: fy,
       button: "left",
       buttons: 1,
+      clickCount: 1,
     });
-    await sleep(16);
-  }
 
-  await session.send("Input.dispatchDragEvent", {
-    type: "dragOver",
-    x: tx,
-    y: ty,
-    data: { items: [], dragOperationsMask: 1 },
-  }).catch(() => {});
-  await session.send("Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x: tx,
-    y: ty,
-    button: "left",
-    buttons: 0,
-    clickCount: 1,
-  });
-  await session.send("Input.dispatchDragEvent", {
-    type: "drop",
-    x: tx,
-    y: ty,
-    data: { items: [], dragOperationsMask: 1 },
-  }).catch(() => {});
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      await move(fx + (tx - fx) * t, fy + (ty - fy) * t, 1);
+      await sleep(16);
+      if (payload) break; // Chrome handed over a drag; finish it as a drag.
+    }
+
+    if (payload) {
+      const data = payload as Record<string, unknown>;
+      for (const type of ["dragEnter", "dragOver", "drop"] as const) {
+        await session.send("Input.dispatchDragEvent", { type, x: tx, y: ty, data });
+      }
+      // Release the button so the page does not think one is still held.
+      await session
+        .send("Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x: tx,
+          y: ty,
+          button: "left",
+          buttons: 0,
+          clickCount: 1,
+        })
+        .catch(() => {});
+      return { html5: true };
+    }
+
+    // Not an HTML5 drag: finish the plain mouse gesture.
+    await move(tx, ty, 1);
+    await session.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: tx,
+      y: ty,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    return { html5: false };
+  } finally {
+    stopListening();
+    await session.send("Input.setInterceptDrags", { enabled: false }).catch(() => {});
+  }
 }
 
 export async function scroll(

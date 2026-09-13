@@ -190,8 +190,11 @@ defineTool({
           args.ref_end,
           "left_click_drag (drop)",
         );
-        await drag(tabId, { from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
-        notes.push(`dragged ${from.label} to ${to.label}`);
+        const dragged = await drag(tabId, { from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
+        notes.push(
+          `dragged ${from.label} to ${to.label}` +
+            (dragged.html5 ? " (completed an HTML5 drop)" : " (mouse drag; no HTML5 drop target)"),
+        );
         break;
       }
 
