@@ -15,6 +15,7 @@ import {
   assertSameOrigin,
   originOf,
   settleAfterAction,
+  waitForSettle,
 } from "../core/guards";
 import { capture, geometryFor, type Region } from "../core/screenshot";
 import { refRect, evalInPage } from "../core/page";
@@ -196,8 +197,28 @@ defineTool({
 
       case "type": {
         if (args.text === undefined) throw new PricklyError("type needs text.", "bad_params");
+        // Let a mid-navigation page finish before aiming at its fields.
+        await waitForSettle(tabId, 2000);
+        // Typing with nothing focused sends the characters into the void and
+        // used to report a confident "typed N characters". Refuse instead, and
+        // say how to fix it: a silent no-op is the worst kind of failure.
+        const target = await focusedField(tabId);
+        if (!target.editable) {
+          throw new PricklyError(
+            `Nothing editable is focused (active element: ${target.description}), so the text ` +
+              `would go nowhere. Click the field first, or use form_input with a ref to set its ` +
+              `value directly.`,
+            "bad_params",
+          );
+        }
         await typeText(tabId, args.text);
-        notes.push(`typed ${args.text.length} characters`);
+        const after = await readFieldValue(tabId);
+        notes.push(
+          after !== null && after.length === 0 && args.text.length > 0
+            ? `typed ${args.text.length} characters but the field is still empty; it may reject ` +
+              `this input (a number field, or a masked/controlled component)`
+            : `typed ${args.text.length} characters into ${target.description}`,
+        );
         break;
       }
 
@@ -310,6 +331,50 @@ defineTool({
  * scrolls, and screenshots all report the real cause (a backgrounded 0x0
  * profile) instead of a cryptic geometry error.
  */
+/** What currently has keyboard focus, and whether text can go into it. */
+async function focusedField(
+  tabId: number,
+): Promise<{ editable: boolean; description: string; selector: string | null }> {
+  const info = await evalInPage<{ editable: boolean; description: string; selector: string | null }>(
+    tabId,
+    `(() => {
+      const el = document.activeElement;
+      if (!el || el === document.body || el === document.documentElement) {
+        return { editable: false, description: "the page body (nothing focused)", selector: null };
+      }
+      const tag = el.tagName.toLowerCase();
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      const editable =
+        tag === "textarea" ||
+        (tag === "input" && !["checkbox","radio","button","submit","reset","file","range","image"].includes(type)) ||
+        el.isContentEditable === true ||
+        el.getAttribute("role") === "textbox";
+      const name = el.id ? "#" + el.id : el.getAttribute("name") ? "[name=" + el.getAttribute("name") + "]" : tag;
+      const selector = el.id
+        ? "#" + CSS.escape(el.id)
+        : el.getAttribute("name")
+          ? tag + "[name=" + JSON.stringify(el.getAttribute("name")) + "]"
+          : null;
+      return { editable, description: name + (type ? " (type=" + type + ")" : ""), selector };
+    })()`,
+  ).catch(() => ({ editable: true, description: "unknown", selector: null }));
+  return info;
+}
+
+/** Current value of the focused field, when it has one. */
+async function readFieldValue(tabId: number): Promise<string | null> {
+  return evalInPage<string | null>(
+    tabId,
+    `(() => {
+      const el = document.activeElement;
+      if (!el) return null;
+      if (typeof el.value === "string") return el.value;
+      if (el.isContentEditable) return el.textContent || "";
+      return null;
+    })()`,
+  ).catch(() => null);
+}
+
 async function assertRenderable(tabId: number): Promise<void> {
   const size = await evalInPage<{ w: number; h: number; hidden: boolean }>(
     tabId,

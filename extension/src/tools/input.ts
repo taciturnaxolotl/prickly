@@ -356,6 +356,7 @@ export async function pressKeyChord(
   const normalized = [...parts.sort(), key].join("+");
   const commands = isMac() ? MAC_COMMANDS[normalized] ?? MAC_COMMANDS[key] : undefined;
 
+  await wakeRendererForInput(tabId);
   const session = cdp(tabId);
   for (let i = 0; i < Math.min(repeat, 100); i++) {
     await session.send("Input.dispatchKeyEvent", {
@@ -386,6 +387,29 @@ export async function pressKeyChord(
  * keydown handlers fire; everything else (emoji, CJK, accents) goes through
  * insertText, because synthesizing those is a losing game.
  */
+/**
+ * Wakes a background tab's renderer so it will accept key events.
+ *
+ * Measured, not guessed: on a tab that is not the active one, key events
+ * dispatch without error and are silently dropped, indefinitely. Forcing a
+ * frame with a tiny screenshot makes the very next key event land. Mouse
+ * events do not need this, which is why clicking a background tab always
+ * worked while typing into one never did.
+ */
+async function wakeRendererForInput(tabId: number): Promise<void> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.active) return;
+    await cdp(tabId).send("Page.captureScreenshot", {
+      format: "jpeg",
+      quality: 1,
+      clip: { x: 0, y: 0, width: 8, height: 8, scale: 1 },
+    });
+  } catch {
+    // Not fatal: on a foreground tab input works regardless.
+  }
+}
+
 /**
  * Best-effort physical key identity for a character, so handlers that read
  * `code`/`keyCode` still work. Omitted for anything unmapped; the literal
@@ -433,6 +457,7 @@ async function typeChar(tabId: number, char: string): Promise<void> {
  * CJK, combining marks) is batched into insertText.
  */
 export async function typeText(tabId: number, text: string): Promise<void> {
+  await wakeRendererForInput(tabId);
   const session = cdp(tabId);
   let pending = "";
 
