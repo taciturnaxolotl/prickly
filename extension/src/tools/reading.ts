@@ -109,7 +109,7 @@ defineTool({
   batchable: true,
   input: {
     tabId: s.number({ description: "Target tab.", integer: true, optional: true }),
-    max_chars: s.number({ description: "Character budget.", integer: true, min: 500, max: 400_000, default: DEFAULT_MAX_CHARS }),
+    max_chars: s.number({ description: "Character budget.", integer: true, min: 1, max: 400_000, default: DEFAULT_MAX_CHARS }),
     offset: s.number({ description: "Start this many characters in, to page through a long page.", integer: true, min: 0, default: 0 }),
     fromEnd: s.boolean({
       description:
@@ -125,17 +125,20 @@ defineTool({
 
     const body = await readText(tab.id!);
     const header = `${tab.title} — ${tab.url}`;
-    if (body.length <= args.max_chars && args.offset === 0) {
+    // Clamp rather than reject: a conservative number should not abort the rest
+    // of a batch over a value we can simply honour.
+    const budget = Math.max(200, args.max_chars);
+    if (body.length <= budget && args.offset === 0) {
       return text(header, "", body);
     }
 
     let start: number;
     if (args.fromEnd) {
-      start = Math.max(0, body.length - args.max_chars - args.offset);
+      start = Math.max(0, body.length - budget - args.offset);
     } else {
       start = Math.min(args.offset, body.length);
     }
-    const slice = body.slice(start, start + args.max_chars);
+    const slice = body.slice(start, start + budget);
     const end = start + slice.length;
     return text(
       header,

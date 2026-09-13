@@ -193,8 +193,12 @@ defineTool({
         );
         const dragged = await drag(tabId, { from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
         notes.push(
-          `dragged ${from.label} to ${to.label}` +
-            (dragged.html5 ? " (completed an HTML5 drop)" : " (mouse drag; no HTML5 drop target)"),
+          dragged.html5
+            ? `dragged ${from.label} to ${to.label} (completed an HTML5 drop)`
+            : dragged.changed
+              ? `dragged ${from.label} to ${to.label} (mouse drag)`
+              : `mouse-dragged ${from.label} to ${to.label} but nothing at the destination ` +
+                `changed; the page may ignore this gesture or expect a different target`,
         );
         break;
       }

@@ -72,6 +72,7 @@ export interface ClickOptions {
 }
 
 export async function click(tabId: number, opts: ClickOptions): Promise<void> {
+  await wakeRendererForInput(tabId);
   const button = opts.button ?? "left";
   const count = opts.clickCount ?? 1;
   const bits = modifiersToBits(opts.modifiers);
@@ -98,6 +99,7 @@ export async function click(tabId: number, opts: ClickOptions): Promise<void> {
 }
 
 export async function hover(tabId: number, x: number, y: number, modifiers?: string): Promise<void> {
+  await wakeRendererForInput(tabId);
   await mouse(tabId, "mouseMoved", x, y, {
     button: "none",
     buttons: 0,
@@ -126,11 +128,15 @@ export interface DragOptions {
  * mouse-driven reordering never produce a payload, so those fall back to the
  * ordinary press-move-release, which is what they actually want.
  */
-export async function drag(tabId: number, opts: DragOptions): Promise<{ html5: boolean }> {
+export async function drag(
+  tabId: number,
+  opts: DragOptions,
+): Promise<{ html5: boolean; changed: boolean }> {
   const steps = Math.max(2, opts.steps ?? 8);
   const [fx, fy] = toViewport(tabId, opts.from.x, opts.from.y);
   const [tx, ty] = toViewport(tabId, opts.to.x, opts.to.y);
   const session = cdp(tabId);
+  await wakeRendererForInput(tabId);
 
   let payload: unknown = null;
   const stopListening = session.on("Input.dragIntercepted", (params) => {
@@ -182,10 +188,24 @@ export async function drag(tabId: number, opts: DragOptions): Promise<{ html5: b
           clickCount: 1,
         })
         .catch(() => {});
-      return { html5: true };
+      return { html5: true, changed: true };
     }
 
-    // Not an HTML5 drag: finish the plain mouse gesture.
+    // Not an HTML5 drag: finish the plain mouse gesture. Snapshot the target
+    // area first so we can tell a drag that did something from one that the
+    // page ignored, instead of always claiming it dragged.
+    const fingerprint = () =>
+      session
+        .send<{ result: { value?: string } }>("Runtime.evaluate", {
+          expression: `(() => { const el = document.elementFromPoint(${Math.round(tx)}, ${Math.round(ty)});
+            if (!el) return "";
+            const v = (el as HTMLInputElement).value;
+            return (v === undefined ? "" : String(v)) + "|" + el.getBoundingClientRect().x + "|" + (el.className || ""); })()`,
+          returnByValue: true,
+        })
+        .then((r) => r.result.value ?? "")
+        .catch(() => "");
+    const before = await fingerprint();
     await move(tx, ty, 1);
     await session.send("Input.dispatchMouseEvent", {
       type: "mouseReleased",
@@ -195,7 +215,9 @@ export async function drag(tabId: number, opts: DragOptions): Promise<{ html5: b
       buttons: 0,
       clickCount: 1,
     });
-    return { html5: false };
+    await sleep(60);
+    const after = await fingerprint();
+    return { html5: false, changed: before !== after };
   } finally {
     stopListening();
     await session.send("Input.setInterceptDrags", { enabled: false }).catch(() => {});
@@ -475,11 +497,13 @@ export async function pressKeyChord(
 /**
  * Wakes a background tab's renderer so it will accept key events.
  *
- * Measured, not guessed: on a tab that is not the active one, key events
- * dispatch without error and are silently dropped, indefinitely. Forcing a
- * frame with a tiny screenshot makes the very next key event land. Mouse
- * events do not need this, which is why clicking a background tab always
- * worked while typing into one never did.
+ * Measured, not guessed: on a tab that is not the active one, input events
+ * dispatch without error and are silently dropped. Forcing a frame with a tiny
+ * screenshot makes the very next event land.
+ *
+ * This bites the first mouse event after a navigation too, not just the
+ * keyboard: the click is swallowed, the tool reports success, and the page
+ * never sees it. Every input entry point wakes the renderer first.
  */
 async function wakeRendererForInput(tabId: number): Promise<void> {
   try {
