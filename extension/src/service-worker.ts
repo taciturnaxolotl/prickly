@@ -23,7 +23,7 @@ import { executeTool, listTools } from "./core/registry";
 import { handleNetworkEvent, handleRequestPaused, forget as forgetNetwork } from "./core/network";
 import { forgetGeometry } from "./core/screenshot";
 import { forgetWorld } from "./core/page";
-import { closeSessionsForClient, reapOrphanSessions, sweepGroups } from "./core/sessions";
+import { closeSessionsForClient, reapOrphanSessions, sweepGroups, untrackTab } from "./core/sessions";
 
 // Registering a tool has the side effect of putting it in the registry.
 import "./tools/tabs";
@@ -60,6 +60,7 @@ onTabClosed((tabId) => {
   forgetGeometry(tabId);
   forgetNetwork(tabId);
   forgetWorld(tabId);
+  void untrackTab(tabId);
 });
 
 const connection = initNativeTransport(identityPromise, (isConnected) => {
@@ -133,8 +134,8 @@ connection.on("sessions/abandoned", async (params) => {
 
 /** Manual tidy-up, used by `prickly clean`. */
 connection.on("sessions/sweep", async (params) => {
-  const { groupIds } = (params ?? {}) as { groupIds?: number[] };
-  const closed = await sweepGroups(groupIds);
+  const { groupIds, tabIds } = (params ?? {}) as { groupIds?: number[]; tabIds?: number[] };
+  const closed = await sweepGroups(groupIds, tabIds);
   return { closed };
 });
 

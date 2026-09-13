@@ -12,6 +12,7 @@ import { text } from "@shared/protocol";
 import {
   closeSession,
   removeTabsPreservingFocus,
+  trackTab,
   createSession,
   getSession,
   listSessions,
@@ -123,6 +124,7 @@ defineTool({
       windowId: session.windowId,
     });
     await chrome.tabs.group({ tabIds: [tab.id!], groupId: session.tabGroupId });
+    await trackTab(session.sessionId, tab.id!);
     return text(`Opened tab ${tab.id}: ${url}`);
   },
 });

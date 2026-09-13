@@ -36,6 +36,16 @@ export interface Session {
   title: string;
   createdAt: number;
   state: SessionState;
+  /**
+   * Tabs this session opened.
+   *
+   * Cleanup cannot rely on the group alone: if the group is dissolved (the
+   * browser does it, or the user drags the last tab out) its tabs survive
+   * ungrouped and a groupId lookup finds nothing, stranding them forever.
+   * Recording our own tab ids means we can always close exactly what we
+   * opened, and never anything of the user's.
+   */
+  tabIds: number[];
 }
 
 /**
@@ -182,6 +192,7 @@ export async function createSession(opts: CreateSessionOptions): Promise<Session
     title,
     createdAt: Date.now(),
     state: "idle",
+    tabIds: [tabId],
   };
   sessions.set(session.sessionId, session);
   await persist();
@@ -195,9 +206,13 @@ export async function closeSession(sessionId: string): Promise<void> {
   sessions.delete(sessionId);
   await persist();
   if (!session) return;
-  const tabs = await chrome.tabs.query({ groupId: session.tabGroupId });
-  const ids = tabs.map((t) => t.id).filter((id): id is number => id !== undefined);
-  await removeTabsPreservingFocus(ids);
+  const inGroup = await chrome.tabs.query({ groupId: session.tabGroupId }).catch(() => []);
+  const ids = new Set<number>();
+  for (const tab of inGroup) if (tab.id !== undefined) ids.add(tab.id);
+  // Tabs we opened that have since been dropped from the group still belong to
+  // us, so they get closed too rather than left behind.
+  for (const id of session.tabIds ?? []) ids.add(id);
+  await removeTabsPreservingFocus([...ids]);
 }
 
 /**
@@ -402,7 +417,7 @@ export async function closeSessionsForClient(sessionIds: string[]): Promise<numb
  * Without an explicit list this only touches groups whose title we set, so a
  * user's own groups are never collateral.
  */
-export async function sweepGroups(groupIds?: number[]): Promise<number> {
+export async function sweepGroups(groupIds?: number[], tabIds?: number[]): Promise<number> {
   let targets: number[];
   if (groupIds?.length) {
     targets = groupIds;
@@ -414,6 +429,12 @@ export async function sweepGroups(groupIds?: number[]): Promise<number> {
   }
 
   let closed = 0;
+  // Tabs whose group was dissolved are no longer reachable by group id, so they
+  // can be named directly.
+  if (tabIds?.length) {
+    await removeTabsPreservingFocus(tabIds);
+    closed += tabIds.length;
+  }
   for (const groupId of targets) {
     try {
       const tabs = await chrome.tabs.query({ groupId });
@@ -432,4 +453,30 @@ export async function sweepGroups(groupIds?: number[]): Promise<number> {
   }
   await persist();
   return closed;
+}
+
+/** Records a tab as belonging to a session, so cleanup can always find it. */
+export async function trackTab(sessionId: string, tabId: number): Promise<void> {
+  const sessions = await load();
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  session.tabIds ??= [];
+  if (!session.tabIds.includes(tabId)) {
+    session.tabIds.push(tabId);
+    await persist();
+  }
+}
+
+/** Drops a closed tab from its session record so the list stays honest. */
+export async function untrackTab(tabId: number): Promise<void> {
+  const sessions = await load();
+  let changed = false;
+  for (const session of sessions.values()) {
+    const next = (session.tabIds ?? []).filter((id) => id !== tabId);
+    if (next.length !== (session.tabIds ?? []).length) {
+      session.tabIds = next;
+      changed = true;
+    }
+  }
+  if (changed) await persist();
 }

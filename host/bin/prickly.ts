@@ -62,7 +62,7 @@ switch (command) {
     console.log("  mcp                  run as an MCP server over stdio");
     console.log("  browsers             list connected browser profiles");
     console.log("  reload [--no-build]  rebuild and reload the extension in place");
-  console.log("  clean                close every open Prickly tab group");
+  console.log("  clean [--tabs ids]   close Prickly tab groups (or specific tabs)");
   console.log("  probe [browser]      drive a browser from the shell:");
     console.log("                         probe dia 'tabs_context {\"createIfEmpty\":true}'");
     console.log("                         probe dia 'computer {\"action\":\"screenshot\"}'");
@@ -234,17 +234,27 @@ async function runClean(): Promise<void> {
     console.error("no browsers connected");
     process.exit(1);
   }
-  const explicit = process.argv
-    .slice(3)
-    .filter((a) => /^\d+$/.test(a))
-    .map((a) => Number(a));
+  // `clean 12 13` sweeps group ids; `clean --tabs 101 102` sweeps tab ids, for
+  // tabs whose group was dissolved out from under them.
+  const args = process.argv.slice(3);
+  const tabsFlag = args.indexOf("--tabs");
+  const numbers = (list: string[]) => list.filter((a) => /^\d+$/.test(a)).map(Number);
+  const explicit = tabsFlag === -1 ? numbers(args) : numbers(args.slice(0, tabsFlag));
+  const explicitTabs = tabsFlag === -1 ? [] : numbers(args.slice(tabsFlag + 1));
 
   for (const target of browsers) {
     const client = new BrowserClient(target.socket);
     await client.connect();
     await client.hello("clean");
     const result = await client
-      .request<{ closed: number }>("sessions/sweep", explicit.length ? { groupIds: explicit } : {}, 30_000)
+      .request<{ closed: number }>(
+        "sessions/sweep",
+        {
+          ...(explicit.length ? { groupIds: explicit } : {}),
+          ...(explicitTabs.length ? { tabIds: explicitTabs } : {}),
+        },
+        30_000,
+      )
       .catch((err: Error) => ({ closed: -1, error: err.message }) as never);
     const closed = (result as { closed: number }).closed;
     console.log(
