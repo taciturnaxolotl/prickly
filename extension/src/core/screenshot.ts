@@ -165,6 +165,23 @@ export async function capture(
     );
   }
 
+  // A frame that is entirely one colour is almost always a failed capture
+  // rather than a real page: it is what a renderer that has gone away hands
+  // back. Returning it as a successful screenshot hides the failure behind a
+  // black rectangle, so check and say so instead. Only worth testing when the
+  // payload is tiny, which is the only time a uniform frame is plausible.
+  if (data.length < BLANK_SUSPECT_CHARS) {
+    const uniform = await uniformColour(data, "image/jpeg");
+    if (uniform && uniform.dark) {
+      throw new PricklyError(
+        `The screenshot came back as a single flat colour (${uniform.colour}), which means the ` +
+          `tab did not render a frame. Its renderer may have gone away: re-read the tab with ` +
+          `tabs_context, and reopen the page if it has become about:blank.`,
+        "internal",
+      );
+    }
+  }
+
   // Verify against the JPEG header rather than trusting the clip. A mismatch
   // here means the coordinate mapping would have been wrong, which is a far
   // more annoying bug to chase later.
@@ -199,6 +216,46 @@ export async function capture(
     quality,
     scaled: scale !== 1,
   };
+}
+
+/** Below this, a flat frame is plausible; above it there is real detail. */
+const BLANK_SUSPECT_CHARS = 12_000;
+
+/**
+ * Whether every sampled pixel is the same colour, and whether that colour is
+ * dark. Sampling a small thumbnail keeps this cheap enough to run on the rare
+ * suspiciously-small capture.
+ */
+async function uniformColour(
+  base64: string,
+  mimeType: string,
+): Promise<{ colour: string; dark: boolean } | null> {
+  try {
+    const blob = await (await fetch(`data:${mimeType};base64,${base64}`)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const w = Math.max(1, Math.min(bitmap.width, 24));
+    const h = Math.max(1, Math.min(bitmap.height, 24));
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const { data } = ctx.getImageData(0, 0, w, h);
+    const r = data[0] ?? 0;
+    const g = data[1] ?? 0;
+    const b = data[2] ?? 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (
+        Math.abs((data[i] ?? 0) - r) > 6 ||
+        Math.abs((data[i + 1] ?? 0) - g) > 6 ||
+        Math.abs((data[i + 2] ?? 0) - b) > 6
+      ) {
+        return null;
+      }
+    }
+    return { colour: `rgb(${r}, ${g}, ${b})`, dark: r + g + b < 60 };
+  } catch {
+    return null;
+  }
 }
 
 /** Walks JPEG segments for the SOF marker. Enough to read width and height. */

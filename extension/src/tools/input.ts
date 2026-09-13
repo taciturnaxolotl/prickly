@@ -530,6 +530,10 @@ function charIdentity(char: string): { code: string; vk: number } | null {
   }
   if (/^[0-9]$/.test(char)) return { code: `Digit${char}`, vk: char.charCodeAt(0) };
   if (char === " ") return { code: "Space", vk: 32 };
+  // Punctuation gets its physical key too, so an editor reading event.code
+  // sees the same thing a real keyboard would produce.
+  const punct = PUNCT_CODES[char];
+  if (punct) return { code: punct, vk: char.charCodeAt(0) };
   return null;
 }
 
