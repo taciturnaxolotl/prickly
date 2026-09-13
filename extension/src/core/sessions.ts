@@ -167,7 +167,7 @@ export async function createSession(opts: CreateSessionOptions): Promise<Session
   try {
     tabGroupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
   } catch (err) {
-    await chrome.tabs.remove(tabId).catch(() => {});
+    await removeTabsPreservingFocus([tabId]);
     throw new PricklyError(
       `Could not create a tab group: ${String((err as Error)?.message ?? err)}. ` +
         `On a browser that suspends background profiles (Dia), a session must be created while ` +
@@ -197,7 +197,35 @@ export async function closeSession(sessionId: string): Promise<void> {
   if (!session) return;
   const tabs = await chrome.tabs.query({ groupId: session.tabGroupId });
   const ids = tabs.map((t) => t.id).filter((id): id is number => id !== undefined);
-  if (ids.length) await chrome.tabs.remove(ids);
+  await removeTabsPreservingFocus(ids);
+}
+
+/**
+ * Closes tabs without moving the user.
+ *
+ * Chrome activates a neighbouring tab whenever the active one goes away, so
+ * cleaning up agent tabs would yank whoever is working in that window to some
+ * unrelated page. Note what was active first and put it back afterwards.
+ *
+ * Window focus is deliberately left alone: raising the browser would be worse
+ * than the problem, since the person may be in another app entirely.
+ */
+export async function removeTabsPreservingFocus(tabIds: number[]): Promise<void> {
+  if (!tabIds.length) return;
+  const doomed = new Set(tabIds);
+  const activeBefore = await chrome.tabs.query({ active: true }).catch(() => []);
+
+  await chrome.tabs.remove(tabIds).catch(() => {});
+
+  for (const tab of activeBefore) {
+    if (tab.id === undefined || doomed.has(tab.id)) continue;
+    try {
+      const still = await chrome.tabs.get(tab.id);
+      if (!still.active) await chrome.tabs.update(tab.id, { active: true });
+    } catch {
+      // The tab the user was on has since gone; nothing to restore.
+    }
+  }
 }
 
 export async function listSessions(): Promise<Session[]> {
@@ -390,7 +418,7 @@ export async function sweepGroups(groupIds?: number[]): Promise<number> {
     try {
       const tabs = await chrome.tabs.query({ groupId });
       const ids = tabs.map((t) => t.id).filter((id): id is number => id !== undefined);
-      if (ids.length) await chrome.tabs.remove(ids);
+      await removeTabsPreservingFocus(ids);
       closed++;
     } catch {
       // Already gone.

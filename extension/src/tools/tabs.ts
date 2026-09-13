@@ -11,6 +11,7 @@ import { s } from "../core/schema";
 import { text } from "@shared/protocol";
 import {
   closeSession,
+  removeTabsPreservingFocus,
   createSession,
   getSession,
   listSessions,
@@ -151,7 +152,7 @@ defineTool({
         isError: true,
       };
     }
-    await chrome.tabs.remove(args.tabId);
+    await removeTabsPreservingFocus([args.tabId]);
     forgetGeometry(args.tabId);
     forgetNetwork(args.tabId);
     return text(`Closed tab ${args.tabId}.`);
