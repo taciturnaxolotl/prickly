@@ -183,7 +183,7 @@ export async function scroll(
   y: number,
   deltaX: number,
   deltaY: number,
-): Promise<{ moved: boolean }> {
+): Promise<{ moved: number; atTop: boolean; atBottom: boolean }> {
   const [vx, vy] = toViewport(tabId, x, y);
   const session = cdp(tabId);
 
@@ -191,8 +191,10 @@ export async function scroll(
   // dispatching a synthetic wheel event. CDP Input.dispatchMouseEvent with
   // type "mouseWheel" never resolves on some Chromium forks (Dia/ArcCore), so
   // it would hang the whole call. Driving scrollTop through Runtime.evaluate is
-  // reliable everywhere and reports whether anything actually moved.
-  const r = await session.send<{ result: { value?: { moved: boolean } } }>("Runtime.evaluate", {
+  // reliable everywhere and can report exactly how far it moved.
+  const r = await session.send<{
+    result: { value?: { moved: number; atTop: boolean; atBottom: boolean } };
+  }>("Runtime.evaluate", {
     expression: `(() => {
       let el = document.elementFromPoint(${vx}, ${vy});
       while (el) {
@@ -205,13 +207,16 @@ export async function scroll(
       const target = el || document.scrollingElement || document.documentElement;
       const beforeY = target.scrollTop, beforeX = target.scrollLeft;
       target.scrollBy(${deltaX}, ${deltaY});
-      const moved = Math.abs(target.scrollTop - beforeY) > 1 || Math.abs(target.scrollLeft - beforeX) > 1;
-      return { moved };
+      const movedY = target.scrollTop - beforeY, movedX = target.scrollLeft - beforeX;
+      const moved = Math.abs(movedY) >= Math.abs(movedX) ? movedY : movedX;
+      const atTop = target.scrollTop <= 0;
+      const atBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 1;
+      return { moved: Math.round(moved), atTop, atBottom };
     })()`,
     returnByValue: true,
   });
   await sleep(80);
-  return { moved: r.result.value?.moved ?? false };
+  return r.result.value ?? { moved: 0, atTop: false, atBottom: false };
 }
 
 // ---------------------------------------------------------------------------

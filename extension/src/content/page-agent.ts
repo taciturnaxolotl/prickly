@@ -351,11 +351,21 @@ interface SearchResult {
   // Local search, in place of a nested model call
   // -------------------------------------------------------------------------
 
+  // Common words match nearly every element, so a full-sentence query drowns
+  // the real hit in noise. These score far lower than distinctive tokens.
+  const STOPWORDS = new Set([
+    "the", "a", "an", "of", "in", "on", "to", "for", "and", "or", "with", "at",
+    "by", "from", "into", "is", "it", "this", "that", "button", "input", "field",
+    "the", "message", "chat", "box", "text", "click", "open", "main",
+  ]);
+
   const search = (query: string, limit: number): SearchResult => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const distinctive = terms.filter((t) => !STOPWORDS.has(t) && t.length > 2);
     const candidates = [
       ...document.querySelectorAll(
-        'a, button, input, select, textarea, summary, [role], [onclick], [tabindex]',
+        "a, button, input, select, textarea, summary, [role], [onclick], [tabindex], " +
+          "[contenteditable]:not([contenteditable=false]), [aria-placeholder], [data-placeholder]",
       ),
     ];
 
@@ -365,12 +375,23 @@ interface SearchResult {
       const role = roleOf(el);
       if (role === "hidden") continue;
       const name = nameOf(el);
+      // Placeholder text lives in several attributes across real inputs and the
+      // contenteditable editors that busy apps use for composers; index them
+      // all so "send a chat" finds the box that shows that placeholder.
+      const placeholder =
+        el.getAttribute("placeholder") ??
+        el.getAttribute("aria-placeholder") ??
+        el.getAttribute("data-placeholder") ??
+        "";
+      const editable = (el as HTMLElement).isContentEditable ? "editable textbox" : "";
       const haystack = [
         name,
         role,
+        placeholder,
+        editable,
         el.getAttribute("id") ?? "",
         el.getAttribute("name") ?? "",
-        el.getAttribute("placeholder") ?? "",
+        el.getAttribute("aria-label") ?? "",
         el.getAttribute("href") ?? "",
         el.className && typeof el.className === "string" ? el.className : "",
       ]
@@ -381,21 +402,29 @@ interface SearchResult {
       const why: string[] = [];
       for (const term of terms) {
         if (!haystack.includes(term)) continue;
-        score += 1;
+        const weak = STOPWORDS.has(term) || term.length <= 2;
+        // A stopword hit barely counts, so it never outranks a real token.
+        score += weak ? 0.1 : 1;
         if (name.toLowerCase() === term) {
           score += 4;
           why.push(`exact name "${term}"`);
+        } else if (placeholder.toLowerCase().includes(term) && !weak) {
+          score += 3;
+          why.push(`placeholder has "${term}"`);
         } else if (name.toLowerCase().startsWith(term)) {
           score += 2;
           why.push(`name starts with "${term}"`);
         } else if (role === term) {
           score += 2;
           why.push(`role is ${term}`);
-        } else {
+        } else if (!weak) {
           why.push(`contains "${term}"`);
         }
       }
+      // Require at least one distinctive-term hit when the query has any, so a
+      // match built purely on stopwords is dropped.
       if (score === 0) continue;
+      if (distinctive.length > 0 && !distinctive.some((t) => haystack.includes(t))) continue;
       if (INTERACTIVE_ROLES.has(role)) score += 1;
       matches.push({ ref: nextRef(el), role, name, score, detail: why.join(", ") });
     }

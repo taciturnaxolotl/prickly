@@ -104,11 +104,19 @@ defineTool({
   name: "get_page_text",
   description:
     "Returns the visible text of the page with scripts and styles stripped. Cheaper than read_page " +
-    "when you want content rather than controls.",
+    "when you want content rather than controls. Use fromEnd to read the bottom of a long page " +
+    "(newest chat messages, latest log lines) and offset to page through it.",
   batchable: true,
   input: {
     tabId: s.number({ description: "Target tab.", integer: true, optional: true }),
     max_chars: s.number({ description: "Character budget.", integer: true, min: 500, max: 400_000, default: DEFAULT_MAX_CHARS }),
+    offset: s.number({ description: "Start this many characters in, to page through a long page.", integer: true, min: 0, default: 0 }),
+    fromEnd: s.boolean({
+      description:
+        "Read the last max_chars of the page instead of the first. What you want when the newest " +
+        "content is at the bottom, e.g. a chat log below a long sidebar.",
+      default: false,
+    }),
   },
   async execute(args, ctx) {
     const session = await ctx.requireSession();
@@ -116,15 +124,27 @@ defineTool({
     assertDrivable(tab.url);
 
     const body = await readText(tab.id!);
-    if (body.length <= args.max_chars) {
-      return text(`${tab.title} — ${tab.url}`, "", body);
+    const header = `${tab.title} — ${tab.url}`;
+    if (body.length <= args.max_chars && args.offset === 0) {
+      return text(header, "", body);
     }
-    const cut = body.lastIndexOf("\n", args.max_chars);
+
+    let start: number;
+    if (args.fromEnd) {
+      start = Math.max(0, body.length - args.max_chars - args.offset);
+    } else {
+      start = Math.min(args.offset, body.length);
+    }
+    const slice = body.slice(start, start + args.max_chars);
+    const end = start + slice.length;
     return text(
-      `${tab.title} — ${tab.url}`,
-      `Truncated at ${args.max_chars} of ${body.length} chars.`,
+      header,
+      `Showing chars ${start}-${end} of ${body.length}` +
+        (args.fromEnd ? " (from the end)" : "") +
+        (end < body.length && !args.fromEnd ? `; pass offset:${end} to continue` : "") +
+        (start > 0 && args.fromEnd ? `; pass offset:${args.offset + slice.length} to read earlier` : ""),
       "",
-      body.slice(0, cut > 0 ? cut : args.max_chars),
+      slice,
     );
   },
 });

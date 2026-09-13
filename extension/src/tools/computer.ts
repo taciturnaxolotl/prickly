@@ -219,12 +219,17 @@ defineTool({
           : dir === "right" ? [amount, 0]
           : [-amount, 0];
         const scrolled = await scroll(tabId, point.x, point.y, dx, dy);
-        notes.push(
-          scrolled.moved
-            ? `scrolled ${dir} by ${amount}`
-            : `scroll ${dir} moved nothing here; the target under this point is not scrollable ` +
-              `(aim at the list you mean, or use scroll_to with a ref)`,
-        );
+        if (scrolled.moved === 0) {
+          notes.push(
+            (dir === "up" && scrolled.atTop) || (dir === "down" && scrolled.atBottom)
+              ? `already at the ${dir === "up" ? "top" : "bottom"}; nothing more to scroll ${dir}`
+              : `scroll ${dir} moved nothing here; the target under this point is not scrollable ` +
+                `(aim at the list you mean, or use scroll_to with a ref)`,
+          );
+        } else {
+          const edge = scrolled.atTop ? " (reached top)" : scrolled.atBottom ? " (reached bottom)" : "";
+          notes.push(`scrolled ${dir} ${Math.abs(scrolled.moved)}px${edge}`);
+        }
         break;
       }
 
