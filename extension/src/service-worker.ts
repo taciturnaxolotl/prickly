@@ -30,6 +30,7 @@ import "./tools/navigate";
 import "./tools/computer";
 import "./tools/reading";
 import "./tools/network";
+import "./tools/script";
 import "./tools/batch";
 
 const KEEPALIVE_ALARM = "prickly-keepalive";
