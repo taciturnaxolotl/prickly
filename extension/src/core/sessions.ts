@@ -58,10 +58,18 @@ export async function getSession(sessionId: string): Promise<Session | undefined
   const session = sessions.get(sessionId);
   if (!session) return undefined;
 
-  // The user can dissolve a group by dragging its last tab out. Notice that
-  // rather than handing back a dead group id.
+  // A session dies two ways. The user drags out its last tab, dissolving the
+  // group. Or, on Dia and other browsers that suspend a profile when you swipe
+  // away from it, the group id can still resolve while every tab under it is
+  // frozen and throws "Tab not found for session ID" on first touch. Validate
+  // both the group and that at least one real tab answers, so a stale session
+  // is discarded here rather than erroring inside the tool that used it.
   try {
     await chrome.tabGroups.get(session.tabGroupId);
+    const tabs = await chrome.tabs.query({ groupId: session.tabGroupId });
+    if (tabs.length === 0) throw new Error("group has no live tabs");
+    // Touch one tab to force the suspended-profile error to surface now.
+    if (tabs[0]?.id !== undefined) await chrome.tabs.get(tabs[0].id);
     return session;
   } catch {
     sessions.delete(sessionId);
@@ -124,7 +132,21 @@ export async function createSession(opts: CreateSessionOptions): Promise<Session
     windowId = tab.windowId;
   }
 
-  const tabGroupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+  // Grouping can fail on a suspended profile ("Tab not found for session ID"),
+  // and a half-created session would otherwise leave the tab orphaned. Clean
+  // it up and report the real reason.
+  let tabGroupId: number;
+  try {
+    tabGroupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+  } catch (err) {
+    await chrome.tabs.remove(tabId).catch(() => {});
+    throw new PricklyError(
+      `Could not create a tab group: ${String((err as Error)?.message ?? err)}. ` +
+        `On a browser that suspends background profiles (Dia), a session must be created while ` +
+        `its profile is the active one; after that it can be driven from the background.`,
+      "internal",
+    );
+  }
   const session: Session = {
     sessionId: opts.sessionId,
     tabGroupId,

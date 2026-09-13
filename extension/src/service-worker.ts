@@ -22,6 +22,7 @@ import { identity } from "./core/identity";
 import { executeTool, listTools } from "./core/registry";
 import { handleNetworkEvent, handleRequestPaused, forget as forgetNetwork } from "./core/network";
 import { forgetGeometry } from "./core/screenshot";
+import { forgetWorld } from "./core/page";
 
 // Registering a tool has the side effect of putting it in the registry.
 import "./tools/tabs";
@@ -56,6 +57,7 @@ onAnyCdpEvent((tabId, method, params) => {
 onTabClosed((tabId) => {
   forgetGeometry(tabId);
   forgetNetwork(tabId);
+  forgetWorld(tabId);
 });
 
 const connection = initNativeTransport(identityPromise, (isConnected) => {
@@ -117,6 +119,33 @@ connection.on("reload", async () => {
 connection.on("get_status", async () => {
   const me = await identityPromise;
   return { ...connection.status(), identity: me, tools: listTools().length };
+});
+
+/**
+ * Diagnostics: what windows and tabs this extension instance can actually see.
+ * Useful for understanding how a browser scopes an extension across profiles.
+ */
+connection.on("diagnostics", async () => {
+  const windows = await chrome.windows.getAll({ populate: true }).catch(() => []);
+  const allTabs = await chrome.tabs.query({}).catch(() => []);
+  return {
+    windowCount: windows.length,
+    windows: windows.map((w) => ({
+      id: w.id,
+      focused: w.focused,
+      type: w.type,
+      tabCount: w.tabs?.length ?? 0,
+    })),
+    tabCount: allTabs.length,
+    tabs: allTabs.slice(0, 30).map((t) => ({
+      id: t.id,
+      windowId: t.windowId,
+      groupId: t.groupId,
+      active: t.active,
+      url: t.url?.slice(0, 60),
+      title: t.title?.slice(0, 40),
+    })),
+  };
 });
 
 // ---------------------------------------------------------------------------

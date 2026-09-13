@@ -17,7 +17,7 @@ import {
   settleAfterAction,
 } from "../core/guards";
 import { capture, geometryFor, type Region } from "../core/screenshot";
-import { refRect } from "../core/page";
+import { refRect, evalInPage } from "../core/page";
 import { cdp, sleep, takeDialogs } from "../core/cdp";
 import {
   click,
@@ -355,14 +355,13 @@ async function doScreenshot(
 
 async function waitForText(tabId: number, needle: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  const lower = needle.toLowerCase();
+  const lower = JSON.stringify(needle.toLowerCase());
   for (;;) {
-    const [frame] = await chrome.scripting.executeScript({
-      target: { tabId },
-      args: [lower],
-      func: (n: string) => document.body?.innerText?.toLowerCase().includes(n) ?? false,
-    });
-    if (frame?.result === true) return true;
+    const found = await evalInPage<boolean>(
+      tabId,
+      `(document.body?.innerText?.toLowerCase().includes(${lower})) ?? false`,
+    );
+    if (found === true) return true;
     if (Date.now() >= deadline) return false;
     await sleep(250);
   }

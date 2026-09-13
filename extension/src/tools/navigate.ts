@@ -8,6 +8,7 @@ import { PricklyError, text } from "@shared/protocol";
 import { resolveTab } from "../core/sessions";
 import { assertAllowed, assertDrivable, originOf, waitForSettle } from "../core/guards";
 import { forgetGeometry } from "../core/screenshot";
+import { forgetWorld, evalInPage } from "../core/page";
 
 defineTool({
   name: "navigate",
@@ -39,14 +40,7 @@ defineTool({
     const before = originOf(tab.url);
 
     if (isHistory) {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id! },
-        args: [args.url],
-        func: (direction: string) => {
-          if (direction === "back") history.back();
-          else history.forward();
-        },
-      });
+      await evalInPage(tab.id!, args.url === "back" ? "history.back()" : "history.forward()");
     } else {
       const target = resolveUrl(args.url, tab.url);
       assertDrivable(target);
@@ -55,6 +49,7 @@ defineTool({
     }
 
     forgetGeometry(tab.id!);
+    forgetWorld(tab.id!);
     const settled = await waitForSettle(tab.id!, args.timeoutMs);
     const after = await chrome.tabs.get(tab.id!);
 
