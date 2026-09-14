@@ -405,6 +405,31 @@ for (let n = 1; n <= 12; n++) {
   NAMED_KEYS[`f${n}`] = { key: `F${n}`, code: `F${n}`, vk: 111 + n };
 }
 
+/**
+ * Virtual key codes for punctuation.
+ *
+ * Using the character's own code here is a trap: "." is 46, which is the code
+ * for Delete, so typing a full stop deleted a character instead of inserting
+ * one. These are the real OEM key codes a keyboard sends, with shifted symbols
+ * mapping to the unshifted key they live on.
+ */
+const PUNCT_VK: Record<string, number> = {
+  ";": 186, ":": 186,
+  "=": 187, "+": 187,
+  ",": 188, "<": 188,
+  "-": 189, "_": 189,
+  ".": 190, ">": 190,
+  "/": 191, "?": 191,
+  "`": 192, "~": 192,
+  "[": 219, "{": 219,
+  "\\": 220, "|": 220,
+  "]": 221, "}": 221,
+  "'": 222, '"': 222,
+  "!": 49, "@": 50, "#": 51, "$": 52, "%": 53,
+  "^": 54, "&": 55, "*": 56, "(": 57, ")": 48,
+  " ": 32,
+};
+
 /** Physical codes for punctuation, so `event.code` is right for those too. */
 const PUNCT_CODES: Record<string, string> = {
   "-": "Minus", "=": "Equal", "[": "BracketLeft", "]": "BracketRight",
@@ -433,7 +458,9 @@ function specFor(raw: string): KeySpec {
     return {
       key: raw,
       code,
-      windowsVirtualKeyCode: lower.toUpperCase().charCodeAt(0),
+      windowsVirtualKeyCode: /[a-z0-9]/.test(lower)
+        ? lower.toUpperCase().charCodeAt(0)
+        : (PUNCT_VK[raw] ?? 0),
       text: raw,
     };
   }
@@ -506,10 +533,20 @@ export async function pressKeyChord(
  * never sees it. Every input entry point wakes the renderer first.
  */
 async function wakeRendererForInput(tabId: number): Promise<void> {
+  const session = cdp(tabId);
+  try {
+    // Subscribing to Page events is what lets a modal dialog be answered
+    // automatically. Without it an alert() raised by a click blocks the
+    // renderer with nobody listening, and every later command on the tab times
+    // out: one click wedges the whole session.
+    await session.enable("Page");
+  } catch {
+    // Restricted page; input will fail for its own reasons.
+  }
   try {
     const tab = await chrome.tabs.get(tabId);
     if (tab.active) return;
-    await cdp(tabId).send("Page.captureScreenshot", {
+    await session.send("Page.captureScreenshot", {
       format: "jpeg",
       quality: 1,
       clip: { x: 0, y: 0, width: 8, height: 8, scale: 1 },
@@ -530,10 +567,10 @@ function charIdentity(char: string): { code: string; vk: number } | null {
   }
   if (/^[0-9]$/.test(char)) return { code: `Digit${char}`, vk: char.charCodeAt(0) };
   if (char === " ") return { code: "Space", vk: 32 };
-  // Punctuation gets its physical key too, so an editor reading event.code
-  // sees the same thing a real keyboard would produce.
+  // Punctuation gets its physical key and the real OEM key code, never the
+  // character's own byte value, which collides with control keys.
   const punct = PUNCT_CODES[char];
-  if (punct) return { code: punct, vk: char.charCodeAt(0) };
+  if (punct) return { code: punct, vk: PUNCT_VK[char] ?? 0 };
   return null;
 }
 

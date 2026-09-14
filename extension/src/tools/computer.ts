@@ -348,9 +348,28 @@ async function focusedField(
   const info = await evalInPage<{ editable: boolean; description: string; selector: string | null }>(
     tabId,
     `(() => {
-      const el = document.activeElement;
-      if (!el || el === document.body || el === document.documentElement) {
+      // Focus can live inside a same-origin frame, where the top document only
+      // reports the <iframe> element. Walk in so a rich text editor hosted in a
+      // frame is recognised instead of refused.
+      let doc = document;
+      let el = doc.activeElement;
+      let depth = 0;
+      while (el && el.tagName === "IFRAME" && depth++ < 5) {
+        let inner = null;
+        try { inner = el.contentDocument; } catch { inner = null; }
+        if (!inner || !inner.activeElement) break;
+        doc = inner;
+        el = inner.activeElement;
+      }
+      if (!el || el === doc.body && !doc.body.isContentEditable) {
+        const body = doc.body;
+        if (body && body.isContentEditable) {
+          return { editable: true, description: "an editable document body", selector: null };
+        }
         return { editable: false, description: "the page body (nothing focused)", selector: null };
+      }
+      if (el === doc.documentElement) {
+        return { editable: false, description: "the page root (nothing focused)", selector: null };
       }
       const tag = el.tagName.toLowerCase();
       const type = (el.getAttribute("type") || "").toLowerCase();
@@ -367,7 +386,8 @@ async function focusedField(
           : null;
       return { editable, description: name + (type ? " (type=" + type + ")" : ""), selector };
     })()`,
-  ).catch(() => ({ editable: true, description: "unknown", selector: null }));
+  )
+    .catch(() => ({ editable: true, description: "unknown", selector: null }));
   return info;
 }
 
@@ -376,14 +396,25 @@ async function readFieldValue(tabId: number): Promise<string | null> {
   return evalInPage<string | null>(
     tabId,
     `(() => {
-      const el = document.activeElement;
+      let doc = document;
+      let el = doc.activeElement;
+      let depth = 0;
+      while (el && el.tagName === "IFRAME" && depth++ < 5) {
+        let inner = null;
+        try { inner = el.contentDocument; } catch { inner = null; }
+        if (!inner) break;
+        doc = inner;
+        el = inner.activeElement || inner.body;
+      }
       if (!el) return null;
       if (typeof el.value === "string") return el.value;
       if (el.isContentEditable) return el.textContent || "";
+      if (doc !== document && doc.body) return doc.body.innerText || "";
       return null;
     })()`,
   ).catch(() => null);
 }
+
 
 async function assertRenderable(tabId: number): Promise<void> {
   const size = await evalInPage<{ w: number; h: number; hidden: boolean }>(
