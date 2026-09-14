@@ -14,6 +14,14 @@ import { PricklyError } from "@shared/protocol";
 // URLs the browser will not let us drive
 // ---------------------------------------------------------------------------
 
+/**
+ * Schemes the browser itself will not let an extension drive.
+ *
+ * file:// is deliberately absent. An agent can read local files through the
+ * browser, which is a real capability, but it is one the agent almost always
+ * already has through its own shell, and it is genuinely useful for looking at
+ * saved pages and captured artefacts. Allowed on purpose, not by oversight.
+ */
 const RESTRICTED_SCHEMES = [
   "chrome:",
   "chrome-extension:",
