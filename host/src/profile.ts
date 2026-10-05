@@ -73,6 +73,28 @@ export function browserName(bundleId: string | undefined): string | null {
   return BROWSER_NAMES[bundleId] ?? null;
 }
 
+/**
+ * Reads the profile's display name from Local State's info_cache, which is what
+ * the profile picker shows. Preferences can lag behind it: Dia's Default
+ * profile keeps "Your Chromium" there after being renamed.
+ */
+function nameFromLocalState(root: string, directory: string): string | null {
+  const state = join(root, "Local State");
+  if (!existsSync(state)) return null;
+  try {
+    const data = JSON.parse(readFileSync(state, "utf8")) as {
+      profile?: { info_cache?: Record<string, { name?: string }> };
+    };
+    return data.profile?.info_cache?.[directory]?.name || null;
+  } catch {
+    return null;
+  }
+}
+
+function profileName(root: string, directory: string): string | null {
+  return nameFromLocalState(root, directory) ?? nameFromPreferences(join(root, directory));
+}
+
 /** Reads profile.name out of a Chromium profile's Preferences file. */
 function nameFromPreferences(profileDir: string): string | null {
   const prefs = join(profileDir, "Preferences");
@@ -148,7 +170,7 @@ export function resolveProfile(
   for (const entry of profileDirs) {
     const full = join(root, entry);
     if (storageMentions(full, extensionId, browserId)) {
-      const name = nameFromPreferences(full);
+      const name = profileName(root, entry);
       if (name) return { name, directory: entry, browser };
     }
   }
@@ -160,7 +182,7 @@ export function resolveProfile(
   );
   if (withExtension.length === 1) {
     const only = withExtension[0]!;
-    const name = nameFromPreferences(join(root, only));
+    const name = profileName(root, only);
     if (name) return { name, directory: only, browser };
   }
 

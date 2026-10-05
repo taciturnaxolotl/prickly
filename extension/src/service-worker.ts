@@ -18,7 +18,7 @@ import {
   onAnyCdpEvent,
   onTabClosed,
 } from "./core/cdp";
-import { identity } from "./core/identity";
+import { identity, onProfileLabelChanged } from "./core/identity";
 import { executeTool, listTools } from "./core/registry";
 import { handleNetworkEvent, handleRequestPaused, forget as forgetNetwork } from "./core/network";
 import { forgetGeometry } from "./core/screenshot";
@@ -38,7 +38,7 @@ const KEEPALIVE_ALARM = "prickly-keepalive";
 const OFFSCREEN_PATH = "offscreen.html";
 
 let connected = false;
-const identityPromise: Promise<BrowserIdentity> = identity();
+let identityPromise: Promise<BrowserIdentity> = identity();
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -66,6 +66,14 @@ onTabClosed((tabId) => {
 const connection = initNativeTransport(identityPromise, (isConnected) => {
   connected = isConnected;
   void updateBadge(isConnected);
+});
+
+// The host writes its descriptor once, at register. A rename only reaches
+// agents if the extension registers again under the new name.
+onProfileLabelChanged(() => {
+  identityPromise = identity();
+  connection.disconnect();
+  void connection.connect(identityPromise);
 });
 
 connection.on("hello", async (params) => {

@@ -27,13 +27,15 @@ export async function identity(): Promise<BrowserIdentity> {
 
   const ua = navigator.userAgent;
   const { browser, browserVersion } = detectBrowser(ua);
-  const profile = (stored[LABEL_KEY] as string | undefined) ?? browser;
+  const label = (stored[LABEL_KEY] as string | undefined) || undefined;
+  const profile = label ?? browser;
 
   cached = {
     browserId,
     browser,
     browserVersion,
     profile,
+    ...(label ? { label } : {}),
     extensionId: chrome.runtime.id,
     platform: navigator.platform || detectPlatform(ua),
     protocolVersion: PROTOCOL_VERSION,
@@ -44,6 +46,18 @@ export async function identity(): Promise<BrowserIdentity> {
 export async function setProfileLabel(label: string): Promise<void> {
   await chrome.storage.local.set({ [LABEL_KEY]: label });
   cached = null;
+}
+
+/**
+ * Calls back when the label changes from anywhere, including the options page,
+ * which writes storage directly and cannot reach this module's cache.
+ */
+export function onProfileLabelChanged(callback: () => void): void {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !(LABEL_KEY in changes)) return;
+    cached = null;
+    callback();
+  });
 }
 
 /**

@@ -119,6 +119,8 @@ export interface BrowserIdentity {
   browserVersion: string;
   /** User-facing profile label, editable from the extension options page. */
   profile: string;
+  /** Set only when the user named the profile on the options page; beats the host's lookup on disk. */
+  label?: string;
   extensionId: string;
   platform: string;
   protocolVersion: number;

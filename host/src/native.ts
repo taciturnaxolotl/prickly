@@ -95,7 +95,9 @@ peer.handle("register", async (params) => {
     identity.extensionId,
     identity.browserId,
   );
-  const profile = resolved?.name ?? identity.profile;
+  // A label typed on the options page is a deliberate choice, so it wins over
+  // whatever the browser has on disk.
+  const profile = identity.label ?? resolved?.name ?? identity.profile;
   const browser = resolved?.browser ?? identity.browser;
   if (resolved) {
     log(`resolved profile: ${resolved.browser} / ${resolved.name} (${resolved.directory})`);
