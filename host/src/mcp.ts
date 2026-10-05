@@ -23,6 +23,11 @@ const BROWSER_ARG = {
     "Omit to use the only connected browser, or the one set with prickly_use_browser.",
 };
 
+// Several profiles of one browser process each register a host, but only one
+// profile's extension answers at a time. The rest accept the socket and then
+// stay silent, so the handshake needs a short leash of its own.
+const HANDSHAKE_TIMEOUT_MS = 3_000;
+
 interface JsonRpcRequest {
   jsonrpc: "2.0";
   id?: string | number | null;
@@ -81,7 +86,17 @@ class Pool {
       },
     });
     await client.connect();
-    await client.hello(`mcp:${this.sessionId}`);
+    try {
+      await client.hello(`mcp:${this.sessionId}`, HANDSHAKE_TIMEOUT_MS);
+    } catch (err) {
+      client.close();
+      throw new PricklyError(
+        `${describe(resolved)} is not responding. If it shares a browser with another ` +
+          `connected profile, only one of them is active at a time; switch to it or pick another.`,
+        "timeout",
+        { cause: String(err) },
+      );
+    }
     this.clients.set(resolved.browserId, client);
     return { browser: resolved, client };
   }
@@ -91,24 +106,29 @@ class Pool {
     if (cached) return cached;
     const client = this.clients.get(browserId);
     if (!client) return [];
-    const tools = await client.listTools();
+    const tools = await client.listTools(HANDSHAKE_TIMEOUT_MS);
     this.schemas.set(browserId, tools);
     return tools;
   }
 
   /** Union across every connected browser, deduplicated by name. */
   async allSchemas(): Promise<ToolSchema[]> {
-    const merged = new Map<string, ToolSchema>();
-    for (const browser of this.browsers()) {
-      try {
-        const { client } = await this.clientFor(browser.browserId);
-        void client;
-        for (const tool of await this.schemasFor(browser.browserId)) {
-          if (!merged.has(tool.name)) merged.set(tool.name, tool);
+    // In parallel, so one silent profile costs a single handshake timeout
+    // rather than stalling the list behind it.
+    const lists = await Promise.all(
+      this.browsers().map(async (browser) => {
+        try {
+          await this.clientFor(browser.browserId);
+          return await this.schemasFor(browser.browserId);
+        } catch {
+          // A browser that vanished or went quiet should not break the whole list.
+          return [];
         }
-      } catch {
-        // A browser that vanished mid-listing should not break the whole list.
-      }
+      }),
+    );
+    const merged = new Map<string, ToolSchema>();
+    for (const tool of lists.flat()) {
+      if (!merged.has(tool.name)) merged.set(tool.name, tool);
     }
     return [...merged.values()];
   }

@@ -298,12 +298,12 @@ export class BrowserClient {
     return promise;
   }
 
-  async hello(client: string): Promise<unknown> {
-    return this.request("hello", { protocolVersion: 1, client });
+  async hello(client: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<unknown> {
+    return this.request("hello", { protocolVersion: 1, client }, timeoutMs);
   }
 
-  async listTools(): Promise<ToolSchema[]> {
-    const result = await this.request<{ tools: ToolSchema[] }>("tools/list", {});
+  async listTools(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<ToolSchema[]> {
+    const result = await this.request<{ tools: ToolSchema[] }>("tools/list", {}, timeoutMs);
     return result.tools;
   }
 
