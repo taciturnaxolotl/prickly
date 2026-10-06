@@ -11,8 +11,15 @@
  * from one agent session by passing `browser: "dia"`.
  */
 
+import { watch, type FSWatcher } from "node:fs";
 import { BrowserClient } from "./client";
-import { describe, listBrowsers, resolveBrowser, type ListedBrowser } from "./registry";
+import {
+  describe,
+  ensureRegistryDir,
+  listBrowsers,
+  resolveBrowser,
+  type ListedBrowser,
+} from "./registry";
 import { HOST_VERSION } from "./version";
 import { PricklyError, type ToolResult, type ToolSchema } from "../../shared/protocol";
 
@@ -27,6 +34,16 @@ const BROWSER_ARG = {
 // profile's extension answers at a time. The rest accept the socket and then
 // stay silent, so the handshake needs a short leash of its own.
 const HANDSHAKE_TIMEOUT_MS = 3_000;
+
+// Registry changes arrive in bursts (a descriptor and its socket land
+// together), so wait for the dust to settle before asking browsers again.
+const REGISTRY_SETTLE_MS = 500;
+
+// While no browser has answered, keep asking. A profile can wake up without
+// touching the registry, for instance when the person switches to it.
+const RETRY_WHILE_EMPTY_MS = 15_000;
+
+const BUILTIN_TOOLS = ["prickly_browsers", "prickly_use_browser"];
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -45,7 +62,10 @@ class Pool {
   private defaultBrowserId: string | null = null;
   readonly sessionId: string;
 
-  constructor(clientName: string) {
+  constructor(
+    clientName: string,
+    private readonly onChange: () => void = () => {},
+  ) {
     // One session id per agent process, reused across every browser it talks
     // to, so each browser gives this agent its own tab group.
     this.sessionId =
@@ -81,8 +101,9 @@ class Pool {
     client = new BrowserClient(resolved.socket, {
       onClose: () => {
         this.clients.delete(resolved.browserId);
-        this.schemas.delete(resolved.browserId);
+        const hadSchemas = this.schemas.delete(resolved.browserId);
         if (this.defaultBrowserId === resolved.browserId) this.defaultBrowserId = null;
+        if (hadSchemas) this.onChange();
       },
     });
     await client.connect();
@@ -108,7 +129,21 @@ class Pool {
     if (!client) return [];
     const tools = await client.listTools(HANDSHAKE_TIMEOUT_MS);
     this.schemas.set(browserId, tools);
+    this.onChange();
     return tools;
+  }
+
+  /** Names of every tool known right now, without asking any browser. */
+  knownToolNames(): string[] {
+    const names = new Set(BUILTIN_TOOLS);
+    for (const tools of this.schemas.values()) {
+      for (const tool of tools) names.add(`prickly_${tool.name}`);
+    }
+    return [...names].sort();
+  }
+
+  get hasBrowserTools(): boolean {
+    return [...this.schemas.values()].some((tools) => tools.length > 0);
   }
 
   /** Union across every connected browser, deduplicated by name. */
@@ -161,11 +196,86 @@ export class McpServer {
   /** In-flight requests, so a closing stdin does not cut off a reply. */
   private inFlight = new Set<Promise<void>>();
 
+  /**
+   * The tool list as the client last saw it, so a change can be announced
+   * exactly once. Null until the client has asked, since there is nothing to
+   * be stale against before then.
+   */
+  private advertised: string | null = null;
+  private initialized = false;
+  private watcher: FSWatcher | null = null;
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshing: Promise<void> | null = null;
+  /** A tools/list in progress will report the latest state itself. */
+  private listing = 0;
+
   constructor(
     private readonly writeLine: (line: string) => void,
     clientName = "agent",
   ) {
-    this.pool = new Pool(clientName);
+    this.pool = this.newPool(clientName);
+  }
+
+  private newPool(clientName: string): Pool {
+    return new Pool(clientName, () => this.announceIfChanged());
+  }
+
+  /**
+   * Tells the client to fetch the tool list again when it no longer matches
+   * what the client was last given. Browsers come and go long after an agent
+   * starts, and without this the agent keeps whatever it saw at startup.
+   */
+  private announceIfChanged(): void {
+    if (!this.initialized || this.advertised === null || this.listing > 0) return;
+    const current = this.pool.knownToolNames().join(",");
+    if (current === this.advertised) return;
+    this.advertised = current;
+    this.send({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+  }
+
+  /** Asks every registered browser for its tools, one refresh at a time. */
+  private refresh(): Promise<void> {
+    this.refreshing ??= this.pool
+      .allSchemas()
+      .then(() => this.announceIfChanged())
+      .catch(() => {})
+      .finally(() => {
+        this.refreshing = null;
+      });
+    return this.refreshing;
+  }
+
+  private scheduleRefresh(): void {
+    if (this.settleTimer) clearTimeout(this.settleTimer);
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null;
+      void this.refresh();
+    }, REGISTRY_SETTLE_MS);
+    this.settleTimer.unref?.();
+  }
+
+  private startWatching(): void {
+    if (this.watcher) return;
+    try {
+      this.watcher = watch(ensureRegistryDir(), () => this.scheduleRefresh());
+      this.watcher.unref?.();
+    } catch {
+      // Without a watcher the retry timer below still covers the empty case.
+    }
+    this.retryTimer = setInterval(() => {
+      if (!this.pool.hasBrowserTools) void this.refresh();
+    }, RETRY_WHILE_EMPTY_MS);
+    this.retryTimer.unref?.();
+  }
+
+  private stopWatching(): void {
+    this.watcher?.close();
+    this.watcher = null;
+    if (this.settleTimer) clearTimeout(this.settleTimer);
+    if (this.retryTimer) clearInterval(this.retryTimer);
+    this.settleTimer = null;
+    this.retryTimer = null;
   }
 
   /** Feed one chunk of stdin. JSON-RPC messages are newline-delimited. */
@@ -196,7 +306,10 @@ export class McpServer {
     if (message.id === undefined || message.id === null) {
       if (message.method === "notifications/initialized") {
         const info = message.params?.clientInfo as { name?: string } | undefined;
-        this.pool = new Pool(info?.name ?? "agent");
+        this.pool.close();
+        this.pool = this.newPool(info?.name ?? "agent");
+        this.initialized = true;
+        this.startWatching();
       }
       return;
     }
@@ -221,7 +334,7 @@ export class McpServer {
       case "initialize":
         return {
           protocolVersion: "2024-11-05",
-          capabilities: { tools: { listChanged: false } },
+          capabilities: { tools: { listChanged: true } },
           serverInfo: { name: "prickly", version: HOST_VERSION },
           instructions:
             "Browser control for one or more Chrome-family profiles. Call prickly_browsers first " +
@@ -234,7 +347,12 @@ export class McpServer {
         return {};
 
       case "tools/list":
-        return { tools: await this.toolList() };
+        this.listing++;
+        try {
+          return { tools: await this.toolList() };
+        } finally {
+          this.listing--;
+        }
 
       case "tools/call": {
         const name = String(message.params?.name ?? "");
@@ -289,6 +407,10 @@ export class McpServer {
         },
       });
     }
+    this.advertised = (out as { name: string }[])
+      .map((tool) => tool.name)
+      .sort()
+      .join(",");
     return out;
   }
 
@@ -371,6 +493,7 @@ export class McpServer {
   }
 
   close(): void {
+    this.stopWatching();
     this.pool.close();
   }
 }
