@@ -70,8 +70,10 @@ function bunPath(): string {
   const explicit = process.env.PRICKLY_BUN;
   if (explicit) return explicit;
   // Chrome launches the host with a minimal environment, so an absolute path
-  // matters; `bun` alone would not resolve.
-  for (const candidate of [process.execPath, "/opt/homebrew/bin/bun", "/usr/local/bin/bun"]) {
+  // matters; `bun` alone would not resolve. The package manager's symlink
+  // comes first: process.execPath points into a versioned Homebrew Cellar
+  // folder that disappears on the next `brew upgrade`.
+  for (const candidate of ["/opt/homebrew/bin/bun", "/usr/local/bin/bun", process.execPath]) {
     if (candidate && existsSync(candidate) && !candidate.endsWith("prickly.ts")) return candidate;
   }
   return "bun";
