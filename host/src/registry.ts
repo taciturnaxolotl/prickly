@@ -12,6 +12,16 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import type { BrowserIdentity } from "../../shared/protocol";
+import { BROWSER_NAMES, resolveProfile, type ResolvedProfile } from "./profile";
+
+/** The host knows its own browser; from outside, try each one we know. */
+function resolveProfileAnywhere(extensionId: string, browserId: string): ResolvedProfile | null {
+  for (const bundleId of Object.keys(BROWSER_NAMES)) {
+    const found = resolveProfile(bundleId, extensionId, browserId);
+    if (found) return found;
+  }
+  return null;
+}
 
 export interface BrowserDescriptor {
   browserId: string;
@@ -29,16 +39,22 @@ export interface BrowserDescriptor {
 }
 
 /**
- * Under /tmp rather than $XDG_RUNTIME_DIR because Chrome's native host runs
- * with a minimal environment and we want the agent CLI to find the same path
- * without guessing. World-readable, mode-restricted, and namespaced per user.
+ * Under ~/.local/state rather than $TMPDIR. macOS sweeps $TMPDIR files that
+ * nobody has touched for three days, and a browser left open longer than that
+ * lost its descriptor while the host kept running. The path has to stay short:
+ * macOS caps unix socket paths at 104 bytes.
  */
 export function registryDir(): string {
-  const user = process.env.USER ?? process.env.LOGNAME ?? "unknown";
   const base = process.env.PRICKLY_SOCKET_DIR;
   if (base) return base;
-  // macOS has no /run; tmpdir is the portable answer.
-  void homedir;
+  const state = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+  return join(state, "prickly");
+}
+
+/** Where hosts from before the move still register. */
+export function legacyRegistryDir(): string | null {
+  if (process.env.PRICKLY_SOCKET_DIR) return null;
+  const user = process.env.USER ?? process.env.LOGNAME ?? "unknown";
   return join(tmpdir(), `prickly-${user}`);
 }
 
@@ -90,31 +106,94 @@ export interface ListedBrowser extends BrowserDescriptor {
  * normal rather than exceptional.
  */
 export function listBrowsers(): ListedBrowser[] {
-  const dir = registryDir();
-  if (!existsSync(dir)) return [];
+  const out = new Map<string, ListedBrowser>();
+  for (const dir of [registryDir(), legacyRegistryDir()]) {
+    if (!dir || !existsSync(dir)) continue;
+    for (const entry of readdirSync(dir)) {
+      if (!entry.endsWith(".json")) continue;
+      const path = join(dir, entry);
+      let descriptor: BrowserDescriptor;
+      try {
+        descriptor = JSON.parse(readFileSync(path, "utf8")) as BrowserDescriptor;
+      } catch {
+        rmSync(path, { force: true });
+        continue;
+      }
 
-  const out: ListedBrowser[] = [];
-  for (const entry of readdirSync(dir)) {
-    if (!entry.endsWith(".json")) continue;
-    let descriptor: BrowserDescriptor;
-    try {
-      descriptor = JSON.parse(readFileSync(join(dir, entry), "utf8")) as BrowserDescriptor;
-    } catch {
-      rmSync(join(dir, entry), { force: true });
-      continue;
+      // A recovered descriptor has no pid; its socket answering is the proof.
+      const live = descriptor.pid
+        ? alive(descriptor.pid) && existsSync(descriptor.socket)
+        : existsSync(descriptor.socket);
+      if (!live) {
+        rmSync(path, { force: true });
+        if (descriptor.pid) rmSync(descriptor.socket, { force: true });
+        continue;
+      }
+      if (!out.has(descriptor.browserId)) out.set(descriptor.browserId, { ...descriptor, live });
     }
-
-    const live = alive(descriptor.pid) && existsSync(descriptor.socket);
-    if (!live) {
-      removeDescriptor(descriptor.browserId);
-      continue;
-    }
-    out.push({ ...descriptor, live });
   }
 
   // Most recently started first, so the default pick is the browser the
   // person is probably looking at.
-  return out.sort((a, b) => b.startedAt - a.startedAt);
+  return [...out.values()].sort((a, b) => b.startedAt - a.startedAt);
+}
+
+/**
+ * Rebuilds descriptors for sockets that lost theirs, by asking the browser
+ * behind the socket who it is. A host that is still serving must never
+ * vanish just because its descriptor file went missing.
+ */
+export async function recoverOrphans(
+  probe: (socket: string) => Promise<BrowserIdentity | "dead" | "unknown">,
+): Promise<void> {
+  for (const dir of [registryDir(), legacyRegistryDir()]) {
+    if (!dir || !existsSync(dir)) continue;
+    const entries = new Set(readdirSync(dir));
+    for (const entry of entries) {
+      if (!entry.endsWith(".sock")) continue;
+      const browserId = entry.slice(0, -".sock".length);
+      const jsonPath = join(dir, `${browserId}.json`);
+      let recovered = false;
+      if (entries.has(`${browserId}.json`)) {
+        try {
+          recovered = !(JSON.parse(readFileSync(jsonPath, "utf8")) as BrowserDescriptor).pid;
+        } catch {}
+        if (!recovered) continue;
+      }
+
+      const socket = join(dir, entry);
+      const identity = await probe(socket);
+      // Leave the socket file alone even when nothing answers: deleting a
+      // socket a host is still serving would cut that browser off for good.
+      if (identity === "dead") {
+        if (recovered) rmSync(jsonPath, { force: true });
+        continue;
+      }
+      if (identity === "unknown" || recovered) continue;
+      const resolved = resolveProfileAnywhere(identity.extensionId, identity.browserId);
+      writeFileSync(
+        jsonPath,
+        `${JSON.stringify(
+          {
+            browserId: identity.browserId,
+            profile: identity.label ?? resolved?.name ?? identity.profile,
+            browser: resolved?.browser ?? identity.browser,
+            browserVersion: identity.browserVersion,
+            platform: identity.platform,
+            extensionId: identity.extensionId,
+            protocolVersion: identity.protocolVersion,
+            socket,
+            pid: 0,
+            startedAt: Date.now(),
+            hostVersion: "unknown",
+          } satisfies BrowserDescriptor,
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
+    }
+  }
 }
 
 /**

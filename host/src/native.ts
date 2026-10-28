@@ -26,6 +26,8 @@ import { resolveProfile } from "./profile";
 const STDIN = Bun.file(0).stream();
 const STDOUT = Bun.file(1).writer();
 
+const DESCRIPTOR_REFRESH_MS = 10 * 60_000;
+
 let browserId: string | null = null;
 let server: BrowserSocketServer | null = null;
 
@@ -118,6 +120,16 @@ peer.handle("register", async (params) => {
   };
   writeDescriptor(descriptor);
   log(`serving ${profile} (${identity.browser}) on ${sock}`);
+
+  // Rewrite the descriptor now and then, so a cleaner that deletes stale files
+  // never sees it as stale, and puts it back if one deleted it anyway.
+  setInterval(() => {
+    try {
+      writeDescriptor(descriptor);
+    } catch (err) {
+      log(`descriptor refresh failed: ${String(err)}`);
+    }
+  }, DESCRIPTOR_REFRESH_MS).unref?.();
 
   // The reply to register is the whole handshake: it carries the socket back
   // to the extension's connect() promise. No separate hello round-trip, which

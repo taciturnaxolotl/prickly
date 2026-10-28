@@ -18,6 +18,7 @@ import { FrameDecoder, encodeFrame } from "../../shared/framing";
 import {
   PricklyError,
   nextId,
+  type BrowserIdentity,
   type Event as ProtocolEvent,
   type Frame,
   type Request,
@@ -325,6 +326,27 @@ export class BrowserClient {
     this.pending.rejectAll(reason);
     this.socket?.end();
     this.socket = null;
+  }
+}
+
+/**
+ * Asks whoever serves a socket which browser it is. A refused connection
+ * means nobody is listening; a slow answer only means the browser is busy.
+ */
+export async function probeSocket(path: string): Promise<BrowserIdentity | "dead" | "unknown"> {
+  const client = new BrowserClient(path);
+  try {
+    await client.connect();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code === "ECONNREFUSED" || code === "ENOENT" ? "dead" : "unknown";
+  }
+  try {
+    return (await client.hello("prickly-probe", 3_000)) as BrowserIdentity;
+  } catch {
+    return "unknown";
+  } finally {
+    client.close("probe done");
   }
 }
 

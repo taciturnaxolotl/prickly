@@ -9,8 +9,8 @@
  */
 
 import { McpServer } from "../src/mcp";
-import { describe, listBrowsers, resolveBrowser } from "../src/registry";
-import { BrowserClient } from "../src/client";
+import { describe, listBrowsers, recoverOrphans, resolveBrowser } from "../src/registry";
+import { BrowserClient, probeSocket } from "../src/client";
 
 const command = process.argv[2] ?? "help";
 
@@ -24,6 +24,7 @@ switch (command) {
     break;
 
   case "browsers": {
+    await recoverOrphans(probeSocket);
     const browsers = listBrowsers();
     if (!browsers.length) {
       console.log("no browsers connected");
@@ -94,6 +95,7 @@ function runMcp(): void {
 
 async function runProbe(): Promise<void> {
   const args = process.argv.slice(3);
+  await recoverOrphans(probeSocket);
   const browsers = listBrowsers();
   if (!browsers.length) {
     console.error("no browsers connected");
@@ -229,6 +231,7 @@ async function runReload(): Promise<void> {
  * or interrupted agents.
  */
 async function runClean(): Promise<void> {
+  await recoverOrphans(probeSocket);
   const browsers = listBrowsers();
   if (!browsers.length) {
     console.error("no browsers connected");

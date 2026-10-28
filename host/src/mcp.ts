@@ -12,11 +12,13 @@
  */
 
 import { watch, type FSWatcher } from "node:fs";
-import { BrowserClient } from "./client";
+import { BrowserClient, probeSocket } from "./client";
 import {
   describe,
   ensureRegistryDir,
+  legacyRegistryDir,
   listBrowsers,
+  recoverOrphans,
   resolveBrowser,
   type ListedBrowser,
 } from "./registry";
@@ -42,6 +44,9 @@ const REGISTRY_SETTLE_MS = 500;
 // While no browser has answered, keep asking. A profile can wake up without
 // touching the registry, for instance when the person switches to it.
 const RETRY_WHILE_EMPTY_MS = 15_000;
+
+// Probing orphaned sockets costs a connection each, so do it at most this often.
+const RECOVER_EVERY_MS = 10_000;
 
 const BUILTIN_TOOLS = ["prickly_browsers", "prickly_use_browser"];
 
@@ -77,7 +82,23 @@ class Pool {
     return listBrowsers();
   }
 
+  private recovering: Promise<void> | null = null;
+  private recoveredAt = 0;
+
+  /** Brings back browsers whose descriptor was deleted out from under them. */
+  recover(): Promise<void> {
+    if (Date.now() - this.recoveredAt < RECOVER_EVERY_MS) return this.recovering ?? Promise.resolve();
+    this.recoveredAt = Date.now();
+    this.recovering ??= recoverOrphans(probeSocket)
+      .catch(() => {})
+      .finally(() => {
+        this.recovering = null;
+      });
+    return this.recovering;
+  }
+
   async clientFor(name: string | undefined): Promise<{ browser: ListedBrowser; client: BrowserClient }> {
+    if (resolveBrowser(name, this.browsers()) === null) await this.recover();
     const resolved = resolveBrowser(name, this.browsers());
     if (resolved === null) {
       const found = this.browsers();
@@ -150,6 +171,7 @@ class Pool {
   async allSchemas(): Promise<ToolSchema[]> {
     // In parallel, so one silent profile costs a single handshake timeout
     // rather than stalling the list behind it.
+    await this.recover();
     const lists = await Promise.all(
       this.browsers().map(async (browser) => {
         try {
@@ -204,6 +226,7 @@ export class McpServer {
   private advertised: string | null = null;
   private initialized = false;
   private watcher: FSWatcher | null = null;
+  private legacyWatcher: FSWatcher | null = null;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
   private refreshing: Promise<void> | null = null;
@@ -263,6 +286,13 @@ export class McpServer {
     } catch {
       // Without a watcher the retry timer below still covers the empty case.
     }
+    const legacy = legacyRegistryDir();
+    if (legacy) {
+      try {
+        this.legacyWatcher = watch(legacy, () => this.scheduleRefresh());
+        this.legacyWatcher.unref?.();
+      } catch {}
+    }
     this.retryTimer = setInterval(() => {
       if (!this.pool.hasBrowserTools) void this.refresh();
     }, RETRY_WHILE_EMPTY_MS);
@@ -272,6 +302,8 @@ export class McpServer {
   private stopWatching(): void {
     this.watcher?.close();
     this.watcher = null;
+    this.legacyWatcher?.close();
+    this.legacyWatcher = null;
     if (this.settleTimer) clearTimeout(this.settleTimer);
     if (this.retryTimer) clearInterval(this.retryTimer);
     this.settleTimer = null;
@@ -420,6 +452,7 @@ export class McpServer {
 
   private async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
     if (name === "prickly_browsers") {
+      await this.pool.recover();
       const browsers = this.pool.browsers();
       if (!browsers.length) {
         return asMcp(

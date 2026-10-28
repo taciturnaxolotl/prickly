@@ -20,6 +20,15 @@ import { BrowserClient } from "../src/client";
 
 const FAKE_BROWSER_ID = "test-browser-e2e";
 const HOST = join(import.meta.dir, "..", "bin", "prickly.ts");
+const FAKE_IDENTITY = {
+  browserId: FAKE_BROWSER_ID,
+  browser: "Chrome",
+  browserVersion: "999.0",
+  profile: "fake",
+  extensionId: "fokpacegneepaffhbphkadjgljingnbp",
+  platform: "macos",
+  protocolVersion: 1,
+};
 
 /** The socket registry is shared, so isolate this run's directory. Set it in
  * this process too, or socketPath() here would point somewhere else. */
@@ -85,7 +94,7 @@ beforeAll(async () => {
       for (const frame of decoder.push(value)) {
         if (frame.kind !== "request") continue;
         if (frame.method === "hello") {
-          sendToHost({ kind: "response", id: frame.id, result: { pong: true } });
+          sendToHost({ kind: "response", id: frame.id, result: FAKE_IDENTITY });
           continue;
         }
         const waiter = fromHost.shift();
@@ -108,15 +117,7 @@ beforeAll(async () => {
     id: registerId,
     method: "register",
     params: {
-      identity: {
-        browserId: FAKE_BROWSER_ID,
-        browser: "Chrome",
-        browserVersion: "999.0",
-        profile: "fake",
-        extensionId: "fokpacegneepaffhbphkadjgljingnbp",
-        platform: "macos",
-        protocolVersion: 1,
-      },
+      identity: FAKE_IDENTITY,
     },
   });
 
@@ -142,6 +143,20 @@ describe("host chain", () => {
     process.env.PRICKLY_SOCKET_DIR = SOCKET_DIR;
     const browsers = listBrowsers();
     const mine = browsers.find((b) => b.browserId === FAKE_BROWSER_ID);
+    expect(mine).toBeDefined();
+    expect(mine!.profile).toBe("fake");
+    expect(mine!.socket).toBe(socketPath(FAKE_BROWSER_ID));
+  });
+
+  test("a browser whose descriptor was deleted is found again through its socket", async () => {
+    const { listBrowsers, recoverOrphans, descriptorPath } = await import("../src/registry");
+    const { probeSocket } = await import("../src/client");
+    rmSync(descriptorPath(FAKE_BROWSER_ID), { force: true });
+    expect(listBrowsers().some((b) => b.browserId === FAKE_BROWSER_ID)).toBe(false);
+    expect(existsSync(socketPath(FAKE_BROWSER_ID))).toBe(true);
+
+    await recoverOrphans(probeSocket);
+    const mine = listBrowsers().find((b) => b.browserId === FAKE_BROWSER_ID);
     expect(mine).toBeDefined();
     expect(mine!.profile).toBe("fake");
     expect(mine!.socket).toBe(socketPath(FAKE_BROWSER_ID));

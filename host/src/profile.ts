@@ -49,7 +49,7 @@ export interface ResolvedProfile {
 }
 
 /** Bundle id -> the browser's real display name, since the UA can lie. */
-const BROWSER_NAMES: Record<string, string> = {
+export const BROWSER_NAMES: Record<string, string> = {
   "company.thebrowser.dia": "Dia",
   "company.thebrowser.Browser": "Arc",
   "com.google.Chrome": "Chrome",
